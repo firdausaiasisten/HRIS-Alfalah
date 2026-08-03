@@ -1,0 +1,422 @@
+<link href="https://fonts.googleapis.com/css2?family=Philosopher:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --brand-dark:#0E505A; --brand-mid:#3F8D58; --brand-light:#7DD857;
+    --ink:#16302C; --muted:#5b6b66;
+  }
+  *{box-sizing:border-box;}
+  #hris-root{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--ink);}
+  .hb{background:linear-gradient(90deg,#0E505A 0%,#2E7859 30%,#50A158 55%,#72CA57 85%,#7DD857 100%);
+      border-radius:12px;padding:1.25rem 1.5rem;color:#fff;margin-bottom:1rem;}
+  .hb h1{font-family:'Philosopher',serif;font-weight:700;font-size:20px;margin:0 0 4px;letter-spacing:.3px;}
+  .hb p{margin:0;font-size:13px;opacity:.92;}
+  .card{background:var(--surface-2,#fff);border:0.5px solid var(--border,#e3e3e0);border-radius:12px;padding:1rem 1.25rem;margin-bottom:12px;}
+  .grid{display:grid;gap:12px;}
+  .grid-2{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
+  .grid-4{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));}
+  .metric{background:#f3f8f4;border-radius:8px;padding:1rem;}
+  .metric .lbl{font-size:12px;color:var(--muted);margin:0 0 4px;}
+  .metric .val{font-size:22px;font-weight:600;margin:0;color:var(--brand-dark);}
+  .btn{border:0.5px solid #c8d3cf;background:#fff;border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;}
+  .btn:hover{background:#f4f7f5;}
+  .btn-primary{background:var(--brand-dark);color:#fff;border:none;}
+  .btn-primary:hover{background:#0a3d45;}
+  .tabs{display:flex;gap:8px;margin-bottom:14px;}
+  .tab{padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:0.5px solid transparent;}
+  .tab.active{background:var(--brand-dark);color:#fff;}
+  .tab:not(.active){color:var(--muted);}
+  input,select{width:100%;padding:7px 10px;border:0.5px solid #c8d3cf;border-radius:6px;font-size:13px;background:#fff;color:var(--ink);}
+  label{font-size:11px;color:var(--muted);display:block;margin-bottom:3px;}
+  .field{margin-bottom:10px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th,td{text-align:left;padding:8px 6px;border-bottom:0.5px solid #e3e3e0;}
+  th{color:var(--muted);font-weight:500;font-size:12px;}
+  tr:hover td{background:#f7faf8;}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500;}
+  .badge-green{background:#e3f5e3;color:#1e7d1e;}
+  .badge-amber{background:#fdf1de;color:#8a5a10;}
+  .badge-red{background:#fde3e3;color:#a02020;}
+  .badge-gray{background:#eee;color:#666;}
+  .link{color:var(--brand-dark);cursor:pointer;text-decoration:underline;}
+  .err{color:#a02020;font-size:13px;margin:6px 0;}
+  .section-title{font-weight:600;font-size:13px;color:var(--brand-dark);margin:14px 0 8px;border-bottom:1px solid #e3e3e0;padding-bottom:4px;}
+  .searchbar{margin-bottom:12px;}
+</style>
+<div id="hris-root"></div>
+<script>
+(function(){
+  var SUPABASE_URL = "https://tnqeicxwxwtufuglxmdb.supabase.co";
+  var ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRucWVpY3h3eHd0dWZ1Z2x4bWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU3NDMxNTksImV4cCI6MjEwMTMxOTE1OX0.QmH_sZ3fv6rywlCqj5cmX1VDjQHYTeOr7psAp7GMIKg";
+
+  var state = {
+    session: null, user: null, role: null, fullName: null,
+    view: "login", authMode: "login",
+    employees: [], masters: {}, reviews: [], selectedEmployeeId: null,
+    editing: false, loading: false, errorMsg: ""
+  };
+
+  function root(){ return document.getElementById("hris-root"); }
+
+  function authHeaders(json){
+    var h = { apikey: ANON_KEY, Authorization: "Bearer " + (state.session ? state.session.access_token : ANON_KEY) };
+    if (json) h["Content-Type"] = "application/json";
+    return h;
+  }
+
+  function api(path, opts){
+    opts = opts || {};
+    return fetch(SUPABASE_URL + path, {
+      method: opts.method || "GET",
+      headers: Object.assign(authHeaders(true), opts.headers || {}),
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    }).then(function(res){
+      return res.text().then(function(txt){
+        var data = txt ? JSON.parse(txt) : null;
+        if (!res.ok) { throw new Error((data && (data.msg || data.message || data.error_description)) || res.statusText); }
+        return data;
+      });
+    });
+  }
+
+  function fmtDate(d){ if(!d) return "-"; var dt=new Date(d); return dt.toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'}); }
+  function fmtMoney(n){ if(n===null||n===undefined) return "-"; return "Rp " + Number(n).toLocaleString('id-ID'); }
+  function daysUntil(d){ if(!d) return null; var diff = (new Date(d) - new Date()); return Math.ceil(diff/(1000*60*60*24)); }
+
+  // ---------------- AUTH ----------------
+  function signUp(email, password, fullName){
+    state.loading = true; render();
+    api("/auth/v1/signup", { method:"POST", body:{ email:email, password:password, data:{ full_name:fullName } } })
+      .then(function(data){
+        state.loading = false;
+        if (data.access_token) { onAuthed(data); }
+        else { state.errorMsg = "Akun dibuat. Cek email Anda untuk konfirmasi, lalu login."; state.authMode="login"; render(); }
+      })
+      .catch(function(e){ state.loading=false; state.errorMsg = e.message; render(); });
+  }
+
+  function signIn(email, password){
+    state.loading = true; render();
+    api("/auth/v1/token?grant_type=password", { method:"POST", body:{ email:email, password:password } })
+      .then(function(data){ state.loading=false; onAuthed(data); })
+      .catch(function(e){ state.loading=false; state.errorMsg = "Login gagal: " + e.message; render(); });
+  }
+
+  function onAuthed(data){
+    state.session = data; state.user = data.user; state.errorMsg = "";
+    fetchRole().then(function(){ state.view = "app"; loadAll(); });
+  }
+
+  function fetchRole(){
+    return api("/rest/v1/user_roles?select=role,full_name&user_id=eq." + state.user.id)
+      .then(function(rows){
+        if (rows && rows[0]) { state.role = rows[0].role; state.fullName = rows[0].full_name; }
+        else { state.role = "pending"; }
+        render();
+      });
+  }
+
+  function signOut(){
+    state.session=null; state.user=null; state.role=null; state.view="login"; state.authMode="login";
+    render();
+  }
+
+  // ---------------- DATA LOADING ----------------
+  function loadAll(){
+    state.loading = true; render();
+    Promise.all([
+      api("/rest/v1/employees?select=*,m_unit_kerja(nama),m_departemen(nama),m_jabatan(nama),m_status_kepegawaian(nama),m_jenis_kepegawaian(nama),m_bank(nama),m_agama(nama),m_status_perkawinan(nama)&deleted_at=is.null&order=full_name.asc"),
+      api("/rest/v1/performance_reviews?select=*&deleted_at=is.null&order=review_date.desc"),
+      api("/rest/v1/m_unit_kerja?select=*&order=nama.asc"),
+      api("/rest/v1/m_departemen?select=*&order=nama.asc"),
+      api("/rest/v1/m_jabatan?select=*&order=nama.asc"),
+      api("/rest/v1/m_status_kepegawaian?select=*"),
+      api("/rest/v1/m_jenis_kepegawaian?select=*"),
+      api("/rest/v1/m_bank?select=*"),
+      api("/rest/v1/m_agama?select=*"),
+      api("/rest/v1/m_status_perkawinan?select=*"),
+      api("/rest/v1/employee_teaching_assignment?select=*"),
+      api("/rest/v1/employment_history?select=*&order=effective_date.desc")
+    ]).then(function(r){
+      state.employees = r[0]; state.reviews = r[1];
+      state.masters = { unit:r[2], dept:r[3], jabatan:r[4], statusKp:r[5], jenisKp:r[6], bank:r[7], agama:r[8], kawin:r[9] };
+      state.teaching = r[10]; state.history = r[11];
+      state.loading = false; render();
+    }).catch(function(e){ state.loading=false; state.errorMsg = "Gagal memuat data: " + e.message; render(); });
+  }
+
+  function latestReview(empId){
+    var rv = state.reviews.filter(function(r){ return r.employee_id === empId; });
+    return rv.length ? rv[0] : null;
+  }
+
+  // ---------------- RENDER: LOGIN ----------------
+  function renderLogin(){
+    var isSignup = state.authMode === "signup";
+    root().innerHTML =
+      '<div class="hb"><h1>PESANTREN MODERN AL-FALAH ABU LAM U</h1><p>Sistem Informasi Kepegawaian (HRIS)</p></div>' +
+      '<div class="card" style="max-width:380px;margin:40px auto;">' +
+        '<h3 style="margin-top:0;font-size:15px;">' + (isSignup ? "Buat Akun" : "Masuk") + '</h3>' +
+        (isSignup ? '<div class="field"><label>Nama Lengkap</label><input id="f-name" /></div>' : '') +
+        '<div class="field"><label>Email</label><input id="f-email" type="email" /></div>' +
+        '<div class="field"><label>Kata Sandi</label><input id="f-pass" type="password" /></div>' +
+        (state.errorMsg ? '<div class="err">' + state.errorMsg + '</div>' : '') +
+        '<button class="btn btn-primary" style="width:100%;margin-top:6px;" id="f-submit">' + (state.loading ? "Memproses..." : (isSignup ? "Daftar" : "Masuk")) + '</button>' +
+        '<p style="font-size:12px;text-align:center;margin-top:14px;color:var(--muted);">' +
+          (isSignup ? 'Sudah punya akun? <span class="link" id="f-toggle">Masuk</span>' : 'Pengguna baru? <span class="link" id="f-toggle">Buat akun</span>') +
+        '</p>' +
+        '<p style="font-size:11px;color:var(--muted);margin-top:10px;">Catatan: pengguna pertama yang mendaftar otomatis menjadi Admin. Pengguna berikutnya menunggu persetujuan peran oleh Admin.</p>' +
+      '</div>';
+
+    document.getElementById("f-submit").onclick = function(){
+      var email = document.getElementById("f-email").value.trim();
+      var pass = document.getElementById("f-pass").value;
+      if (!email || !pass) { state.errorMsg = "Email dan kata sandi wajib diisi."; render(); return; }
+      if (isSignup) { signUp(email, pass, document.getElementById("f-name").value.trim()); }
+      else { signIn(email, pass); }
+    };
+    document.getElementById("f-toggle").onclick = function(){
+      state.authMode = isSignup ? "login" : "signup"; state.errorMsg=""; render();
+    };
+  }
+
+  // ---------------- RENDER: PENDING ----------------
+  function renderPending(){
+    root().innerHTML =
+      '<div class="hb"><h1>PESANTREN MODERN AL-FALAH ABU LAM U</h1><p>Sistem Informasi Kepegawaian (HRIS)</p></div>' +
+      '<div class="card" style="max-width:420px;margin:40px auto;text-align:center;">' +
+        '<p>Akun Anda (<b>' + state.user.email + '</b>) sudah terdaftar, namun belum diberi peran akses oleh Admin.</p>' +
+        '<p style="font-size:13px;color:var(--muted);">Hubungi Admin HRD untuk mengaktifkan akses Anda (admin / hrd_staff / pimpinan).</p>' +
+        '<button class="btn" id="logout-btn" style="margin-top:10px;">Keluar</button>' +
+      '</div>';
+    document.getElementById("logout-btn").onclick = signOut;
+  }
+
+  // ---------------- APP SHELL ----------------
+  function renderApp(){
+    var roleLabel = { admin:"Admin", hrd_staff:"Staf HRD", pimpinan:"Pimpinan" }[state.role] || state.role;
+    var html = '<div class="hb" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+        '<div><h1>PESANTREN MODERN AL-FALAH ABU LAM U</h1><p>Sistem Informasi Kepegawaian — masuk sebagai ' + roleLabel + (state.fullName ? (" · " + state.fullName) : "") + '</p></div>' +
+        '<button class="btn" id="logout-btn" style="background:rgba(255,255,255,0.15);border-color:rgba(255,255,255,0.4);color:#fff;">Keluar</button>' +
+      '</div>' +
+      '<div class="tabs">' +
+        '<div class="tab ' + (state.view==="dashboard"?"active":"") + '" data-view="dashboard">Dashboard Pimpinan</div>' +
+        '<div class="tab ' + (state.view==="biodata"?"active":"") + '" data-view="biodata">Biodata Pegawai</div>' +
+      '</div>' +
+      '<div id="tab-content"></div>';
+    root().innerHTML = html;
+    document.getElementById("logout-btn").onclick = signOut;
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(t){
+      t.onclick = function(){ state.view = t.getAttribute("data-view"); state.selectedEmployeeId=null; state.editing=false; render(); };
+    });
+    if (state.view === "dashboard") renderDashboard();
+    else renderBiodata();
+  }
+
+  // ---------------- DASHBOARD ----------------
+  function renderDashboard(){
+    var el = document.getElementById("tab-content");
+    if (state.loading) { el.innerHTML = '<p>Memuat data...</p>'; return; }
+
+    var emps = state.employees;
+    var total = emps.length;
+    var aktif = emps.filter(function(e){return e.active_status;}).length;
+    var akanBerakhir = emps.filter(function(e){ var d = daysUntil(e.contract_end); return d!==null && d>=0 && d<=30; });
+
+    var scored = emps.map(function(e){ var r = latestReview(e.id); return { emp:e, score: r?parseFloat(r.score_total):null, predikat:r?r.predikat:null }; }).filter(function(x){return x.score!==null;});
+    var avgScore = scored.length ? (scored.reduce(function(s,x){return s+x.score;},0)/scored.length).toFixed(1) : "-";
+    scored.sort(function(a,b){return b.score-a.score;});
+    var top = scored.slice(0,3);
+    var bottom = scored.slice(-3).reverse();
+
+    var byUnit = {};
+    emps.forEach(function(e){ var u = (e.m_unit_kerja && e.m_unit_kerja.nama) || "Tanpa Unit"; byUnit[u]=(byUnit[u]||0)+1; });
+
+    function predikatBadge(p){
+      if (!p) return '<span class="badge badge-gray">-</span>';
+      var cls = p==="Sangat Baik"?"badge-green": p==="Baik"?"badge-green": p==="Cukup"?"badge-amber":"badge-red";
+      return '<span class="badge '+cls+'">'+p+'</span>';
+    }
+
+    var html = '<div class="grid grid-4">' +
+        '<div class="metric"><p class="lbl">Total Pegawai</p><p class="val">' + total + '</p></div>' +
+        '<div class="metric"><p class="lbl">Pegawai Aktif</p><p class="val">' + aktif + '</p></div>' +
+        '<div class="metric"><p class="lbl">Kontrak &le; 30 Hari</p><p class="val">' + akanBerakhir.length + '</p></div>' +
+        '<div class="metric"><p class="lbl">Rata-rata Skor Kinerja</p><p class="val">' + avgScore + '</p></div>' +
+      '</div>';
+
+    if (akanBerakhir.length){
+      html += '<div class="section-title">Perlu Perhatian — Kontrak Akan Berakhir</div><div class="card"><table><tr><th>Nama</th><th>Jabatan</th><th>Berakhir</th><th>Sisa Hari</th></tr>' +
+        akanBerakhir.map(function(e){ return '<tr><td>'+e.full_name+'</td><td>'+((e.m_jabatan&&e.m_jabatan.nama)||"-")+'</td><td>'+fmtDate(e.contract_end)+'</td><td><span class="badge badge-amber">'+daysUntil(e.contract_end)+' hari</span></td></tr>'; }).join('') +
+        '</table></div>';
+    }
+
+    html += '<div class="grid grid-2">' +
+      '<div><div class="section-title">Top Performer</div><div class="card"><table><tr><th>Nama</th><th>Skor</th><th>Predikat</th></tr>' +
+        top.map(function(x){ return '<tr><td>'+x.emp.full_name+'</td><td>'+x.score.toFixed(1)+'</td><td>'+predikatBadge(x.predikat)+'</td></tr>'; }).join('') +
+        (top.length===0?'<tr><td colspan="3" style="color:var(--muted);">Belum ada data penilaian</td></tr>':'') +
+        '</table></div></div>' +
+      '<div><div class="section-title">Perlu Pembinaan</div><div class="card"><table><tr><th>Nama</th><th>Skor</th><th>Predikat</th></tr>' +
+        bottom.map(function(x){ return '<tr><td>'+x.emp.full_name+'</td><td>'+x.score.toFixed(1)+'</td><td>'+predikatBadge(x.predikat)+'</td></tr>'; }).join('') +
+        (bottom.length===0?'<tr><td colspan="3" style="color:var(--muted);">Belum ada data penilaian</td></tr>':'') +
+        '</table></div></div>' +
+    '</div>';
+
+    html += '<div class="section-title">Distribusi Pegawai per Unit Kerja</div><div class="card"><table><tr><th>Unit Kerja</th><th>Jumlah</th></tr>' +
+      Object.keys(byUnit).map(function(u){ return '<tr><td>'+u+'</td><td>'+byUnit[u]+'</td></tr>'; }).join('') +
+      '</table></div>';
+
+    el.innerHTML = html;
+  }
+
+  // ---------------- BIODATA LIST ----------------
+  function renderBiodata(){
+    var el = document.getElementById("tab-content");
+    if (state.loading) { el.innerHTML = '<p>Memuat data...</p>'; return; }
+    if (state.selectedEmployeeId) { renderBiodataDetail(el); return; }
+
+    el.innerHTML = '<div class="searchbar"><input id="search-emp" placeholder="Cari nama atau nomor pegawai..." /></div><div class="card"><table id="emp-table"><tr><th>No. Pegawai</th><th>Nama</th><th>Jabatan</th><th>Unit Kerja</th><th>Status</th><th></th></tr></table></div>';
+
+    function drawRows(filter){
+      var rows = state.employees.filter(function(e){
+        if(!filter) return true;
+        var f = filter.toLowerCase();
+        return e.full_name.toLowerCase().indexOf(f)>=0 || e.employee_number.toLowerCase().indexOf(f)>=0;
+      });
+      var t = document.getElementById("emp-table");
+      t.innerHTML = '<tr><th>No. Pegawai</th><th>Nama</th><th>Jabatan</th><th>Unit Kerja</th><th>Status</th><th></th></tr>' +
+        rows.map(function(e){
+          return '<tr><td>'+e.employee_number+'</td><td>'+e.full_name+'</td><td>'+((e.m_jabatan&&e.m_jabatan.nama)||"-")+'</td><td>'+((e.m_unit_kerja&&e.m_unit_kerja.nama)||"-")+'</td><td>'+(e.active_status?'<span class="badge badge-green">Aktif</span>':'<span class="badge badge-gray">Nonaktif</span>')+'</td><td><span class="link" data-id="'+e.id+'">Lihat</span></td></tr>';
+        }).join('');
+      Array.prototype.forEach.call(t.querySelectorAll("[data-id]"), function(s){
+        s.onclick = function(){ state.selectedEmployeeId = s.getAttribute("data-id"); state.editing=false; render(); };
+      });
+    }
+    drawRows("");
+    document.getElementById("search-emp").oninput = function(e){ drawRows(e.target.value); };
+  }
+
+  function opts(list, valueField, labelField, selected){
+    return '<option value="">-</option>' + list.map(function(o){
+      return '<option value="'+o[valueField]+'" '+(o[valueField]===selected?'selected':'')+'>'+o[labelField]+'</option>';
+    }).join('');
+  }
+
+  function canEdit(){ return state.role === "admin" || state.role === "hrd_staff"; }
+
+  function renderBiodataDetail(el){
+    var e = state.employees.find(function(x){return x.id===state.selectedEmployeeId;});
+    if (!e) { state.selectedEmployeeId=null; renderBiodata(); return; }
+    var edit = state.editing;
+    var m = state.masters;
+    var reviews = state.reviews.filter(function(r){return r.employee_id===e.id;});
+    var teach = (state.teaching||[]).find(function(t){return t.employee_id===e.id;});
+
+    function row(label, viewVal, editHtml){
+      return '<div class="field"><label>'+label+'</label>' + (edit ? editHtml : '<div style="padding:6px 0;font-size:13px;">'+ (viewVal===undefined||viewVal===null||viewVal===""?"-":viewVal) +'</div>') + '</div>';
+    }
+    function inp(id, val, type){ return '<input id="'+id+'" type="'+(type||'text')+'" value="'+(val===null||val===undefined?"":val)+'" />'; }
+
+    var html = '<div style="margin-bottom:10px;"><span class="link" id="back-link">&larr; Kembali ke daftar</span></div>';
+    html += '<div class="card">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+      '<div><h2 style="margin:0;font-size:18px;">'+e.full_name+'</h2><p style="margin:2px 0;color:var(--muted);font-size:13px;">'+e.employee_number+' &middot; '+((e.m_jabatan&&e.m_jabatan.nama)||"-")+'</p></div>' +
+      (canEdit() ? '<button class="btn '+(edit?'':'btn-primary')+'" id="edit-toggle">'+(edit?'Batal':'Edit Data')+'</button>' : '') +
+    '</div>';
+
+    html += '<div class="section-title">Identitas Pribadi</div><div class="grid grid-2">' +
+      row("NIK", e.nik, inp("ed-nik", e.nik)) +
+      row("NUPTK", e.nuptk, inp("ed-nuptk", e.nuptk)) +
+      row("Jenis Kelamin", e.gender==="L"?"Laki-laki":e.gender==="P"?"Perempuan":"-", '<select id="ed-gender"><option value="">-</option><option value="L" '+(e.gender==="L"?"selected":"")+'>Laki-laki</option><option value="P" '+(e.gender==="P"?"selected":"")+'>Perempuan</option></select>') +
+      row("Tempat, Tgl Lahir", (e.birth_place||"-")+", "+fmtDate(e.birth_date), inp("ed-birthplace", e.birth_place) ) +
+      row("Agama", (e.m_agama&&e.m_agama.nama)||"-", '<select id="ed-agama">'+opts(m.agama,"id","nama",e.agama_id)+'</select>') +
+      row("Status Perkawinan", (e.m_status_perkawinan&&e.m_status_perkawinan.nama)||"-", '<select id="ed-kawin">'+opts(m.kawin,"id","nama",e.status_perkawinan_id)+'</select>') +
+    '</div>';
+
+    html += '<div class="section-title">Kontak</div><div class="grid grid-2">' +
+      row("No. HP", e.mobile_phone, inp("ed-mobile", e.mobile_phone)) +
+      row("Email Institusi", e.institution_email, inp("ed-email", e.institution_email)) +
+      row("Alamat", e.address, inp("ed-address", e.address)) +
+      row("Provinsi / Kab.", (e.province||"-")+" / "+(e.regency||"-"), inp("ed-regency", e.regency)) +
+    '</div>';
+
+    html += '<div class="section-title">Kepegawaian</div><div class="grid grid-2">' +
+      row("Status Kepegawaian", (e.m_status_kepegawaian&&e.m_status_kepegawaian.nama)||"-", '<select id="ed-statuskp">'+opts(m.statusKp,"id","nama",e.status_kepegawaian_id)+'</select>') +
+      row("Jenis Kepegawaian", (e.m_jenis_kepegawaian&&e.m_jenis_kepegawaian.nama)||"-", '<select id="ed-jeniskp">'+opts(m.jenisKp,"id","nama",e.jenis_kepegawaian_id)+'</select>') +
+      row("Unit Kerja", (e.m_unit_kerja&&e.m_unit_kerja.nama)||"-", '<select id="ed-unit">'+opts(m.unit,"id","nama",e.unit_kerja_id)+'</select>') +
+      row("Jabatan", (e.m_jabatan&&e.m_jabatan.nama)||"-", '<select id="ed-jabatan">'+opts(m.jabatan,"id","nama",e.jabatan_id)+'</select>') +
+      row("Tanggal Bergabung", fmtDate(e.join_date), inp("ed-join", e.join_date, "date")) +
+      row("Kontrak Berakhir", fmtDate(e.contract_end), inp("ed-contractend", e.contract_end, "date")) +
+      row("Status Aktif", e.active_status?"Aktif":"Nonaktif", '<select id="ed-active"><option value="true" '+(e.active_status?"selected":"")+'>Aktif</option><option value="false" '+(!e.active_status?"selected":"")+'>Nonaktif</option></select>') +
+    '</div>';
+
+    html += '<div class="section-title">Akademik</div><div class="grid grid-2">' +
+      row("Pendidikan Terakhir", e.highest_education, inp("ed-edu", e.highest_education)) +
+      row("Universitas", e.university, inp("ed-univ", e.university)) +
+    '</div>';
+
+    html += '<div class="section-title">Payroll</div><div class="grid grid-2">' +
+      row("Bank", (e.m_bank&&e.m_bank.nama)||"-", '<select id="ed-bank">'+opts(m.bank,"id","nama",e.bank_id)+'</select>') +
+      row("No. Rekening", e.bank_account_number, inp("ed-rek", e.bank_account_number)) +
+      row("Gaji Pokok", fmtMoney(e.basic_salary), inp("ed-gaji", e.basic_salary, "number")) +
+      row("Tunjangan", fmtMoney(e.allowances), inp("ed-tunj", e.allowances, "number")) +
+    '</div>';
+
+    if (teach){
+      html += '<div class="section-title">Penugasan Mengajar</div><div class="grid grid-2">' +
+        row("Mata Pelajaran", teach.subject) + row("Kelas/Jenjang", teach.grade_level) +
+        row("Wali Kelas", teach.is_homeroom_teacher?"Ya":"Tidak") + row("Guru Tahfizh", teach.is_tahfizh_teacher?"Ya":"Tidak") +
+      '</div>';
+    }
+
+    html += '<div class="section-title">Riwayat Penilaian Kinerja</div>';
+    if (reviews.length===0){ html += '<p style="color:var(--muted);font-size:13px;">Belum ada riwayat penilaian.</p>'; }
+    else {
+      html += '<table><tr><th>Periode</th><th>Skor Total</th><th>Predikat</th><th>Rekomendasi</th></tr>' +
+        reviews.map(function(r){
+          var cls = r.predikat==="Sangat Baik"||r.predikat==="Baik"?"badge-green":r.predikat==="Cukup"?"badge-amber":"badge-red";
+          return '<tr><td>'+r.review_period+'</td><td>'+(r.score_total||"-")+'</td><td><span class="badge '+cls+'">'+(r.predikat||"-")+'</span></td><td>'+(r.rekomendasi||"-")+'</td></tr>';
+        }).join('') + '</table>';
+    }
+
+    if (edit) {
+      html += '<div style="margin-top:16px;"><button class="btn btn-primary" id="save-btn">Simpan Perubahan</button></div>';
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+    document.getElementById("back-link").onclick = function(){ state.selectedEmployeeId=null; state.editing=false; render(); };
+    if (canEdit()) {
+      document.getElementById("edit-toggle").onclick = function(){ state.editing = !state.editing; render(); };
+    }
+    if (edit) {
+      document.getElementById("save-btn").onclick = function(){
+        var payload = {
+          nik: val("ed-nik"), nuptk: val("ed-nuptk"), gender: val("ed-gender") || null,
+          birth_place: val("ed-birthplace"), agama_id: val("ed-agama") || null, status_perkawinan_id: val("ed-kawin") || null,
+          mobile_phone: val("ed-mobile"), institution_email: val("ed-email"), address: val("ed-address"), regency: val("ed-regency"),
+          status_kepegawaian_id: val("ed-statuskp") || null, jenis_kepegawaian_id: val("ed-jeniskp") || null,
+          unit_kerja_id: val("ed-unit") || null, jabatan_id: val("ed-jabatan") || null,
+          contract_end: val("ed-contractend") || null, active_status: val("ed-active") === "true",
+          highest_education: val("ed-edu"), university: val("ed-univ"),
+          bank_id: val("ed-bank") || null, bank_account_number: val("ed-rek"),
+          basic_salary: val("ed-gaji") ? Number(val("ed-gaji")) : null, allowances: val("ed-tunj") ? Number(val("ed-tunj")) : null,
+          updated_at: new Date().toISOString()
+        };
+        api("/rest/v1/employees?id=eq."+e.id, { method:"PATCH", headers:{ Prefer:"return=minimal" }, body: payload })
+          .then(function(){ state.editing = false; loadAll(); })
+          .catch(function(err){ alert("Gagal menyimpan: " + err.message); });
+      };
+    }
+    function val(id){ var elx = document.getElementById(id); return elx ? elx.value : ""; }
+  }
+
+  // ---------------- MASTER RENDER ----------------
+  function render(){
+    if (state.view === "login") { renderLogin(); return; }
+    if (state.role === "pending") { renderPending(); return; }
+    renderApp();
+  }
+
+  render();
+})();
+</script>
