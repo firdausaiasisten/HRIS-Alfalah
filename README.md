@@ -82,6 +82,37 @@ Tidak perlu proses build — file `index.html` sudah siap pakai apa adanya.
 - Data sensitif (gaji, NIK, BPJS) hanya bisa diakses oleh role yang berwenang
   sesuai kebijakan RLS di `rls_policies.sql`.
 
+## Roadmap Modularisasi `employees`
+
+Tabel inti `employees` sedang dipecah bertahap menjadi modul-modul anak yang
+ternormalisasi (3NF).
+
+| # | Modul | Status |
+|---|---|---|
+| 1 | `employee_family` (→ `employee_family_members`) | ✅ Selesai — `batch1_family_education_documents.sql` |
+| 2 | `employee_education` | ✅ Selesai — `batch1_family_education_documents.sql` |
+| 3 | `employee_documents` | ✅ Selesai (dirombak total) — `batch1_family_education_documents.sql` |
+| 4 | `employee_contact` | ⏳ Belum |
+| 5 | `employee_bank` | ⏳ Belum |
+| 6 | `employee_payroll` | ⏳ Belum |
+| 7 | `employee_certifications` | ⏳ Perlu disempurnakan (FK + audit trail) |
+| 8 | `employee_competencies` | ⏳ Perlu disempurnakan (FK + audit trail) |
+| 9 | `employee_training` | ⏳ Belum |
+| 10 | `employee_language` | ⏳ Belum |
+| 11 | `employee_leave` | ⏳ Belum |
+| 12 | `employee_attendance_setting` | ⏳ Belum |
+| 13 | `employee_position_history` | ⏳ Belum |
+| 14 | `employee_salary_history` | ⏳ Belum |
+| 15 | `employee_transfer_history` | ⏳ Belum |
+| 16 | `employee_performance` | ✅ Sudah ada sebagai `performance_reviews` |
+| 17 | `employee_rewards` | ⏳ Belum |
+| 18 | `employee_punishment` | ⏳ Belum |
+| 19 | `employee_system_account` | ✅ Sudah ada sebagai `user_roles` |
+
+Setiap modul menggunakan infrastruktur generik dari `batch1_family_education_documents.sql`:
+- `fn_set_updated_at()` — trigger `BEFORE UPDATE` agar `updated_at` selalu akurat
+- `fn_hris_audit()` — trigger `AFTER INSERT/UPDATE/DELETE` yang mencatat setiap perubahan ke tabel `audit_log`
+
 ## Struktur Data Utama
 
 - `employees` — data induk pegawai (single source of truth)
