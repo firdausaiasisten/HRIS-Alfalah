@@ -1,6 +1,6 @@
 # HRIS Al-Falah
 
-Sistem Informasi Kepegawaian (HRIS) untuk **Pesantren Modern Al-Falah Abu Lam U** —
+Sistem Informasi Kepegawaian (HRIS) untuk **Pesantren ** —
 mengelola data induk pegawai, riwayat mutasi, dan penilaian kinerja, dengan
 dashboard ringkas untuk pimpinan.
 
