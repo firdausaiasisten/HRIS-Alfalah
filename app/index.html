@@ -22,6 +22,9 @@
   <!-- Chart.js for Analytics -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
+  <!-- FullCalendar -->
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+
   <style>
     /* ============================================================
        CSS CUSTOM PROPERTIES — LIGHT & DARK THEMES
@@ -482,19 +485,19 @@
   var ROLE_CONFIG = {
     admin: {
       label: "Admin",
-      tabs: ["dashboard", "analytics", "biodata", "leave_management", "notifications", "export_import"],
+      tabs: ["dashboard", "analytics", "calendar", "biodata", "leave_management", "notifications", "export_import"],
       canEdit: true, canApproveLeave: true, canExport: true, canImport: true,
       canManageRoles: true
     },
     hrd_staff: {
       label: "Staf HRD",
-      tabs: ["dashboard", "analytics", "biodata", "leave_management", "notifications", "export_import"],
+      tabs: ["dashboard", "analytics", "calendar", "biodata", "leave_management", "notifications", "export_import"],
       canEdit: true, canApproveLeave: true, canExport: true, canImport: false,
       canManageRoles: false
     },
     pimpinan: {
       label: "Pimpinan",
-      tabs: ["dashboard", "analytics", "biodata", "notifications"],
+      tabs: ["dashboard", "analytics", "calendar", "biodata", "notifications"],
       canEdit: false, canApproveLeave: false, canExport: true, canImport: false,
       canManageRoles: false
     }
@@ -723,6 +726,7 @@
     var tabDefs = [
       { id:"dashboard",        label:"📊 Dashboard" },
       { id:"analytics",        label:"📈 Analitik HR" },
+      { id:"calendar",         label:"📅 Kalender Cuti" },
       { id:"biodata",          label:"👥 Biodata Pegawai" },
       { id:"leave_management", label:"🗓 Cuti & Izin" },
       { id:"notifications",    label:"🔔 Notifikasi" },
@@ -769,10 +773,58 @@
     // Route to content
     if (state.view === "dashboard")        renderDashboard();
     else if (state.view === "analytics")   renderAnalytics();
+    else if (state.view === "calendar")    renderCalendar();
     else if (state.view === "notifications") renderNotifications();
     else if (state.view === "leave_management") loadLeaveRequests();
     else if (state.view === "export_import") renderExportImport();
     else renderBiodata();
+  }
+
+  /* ================================================================
+     RENDER: CALENDAR
+     ================================================================ */
+  function renderCalendar(){
+    var el = document.getElementById("tab-content");
+    el.innerHTML = '<div class="section-title">📅 Kalender Cuti & Izin</div><div class="card"><div id="fc-calendar" style="min-height:500px; color: var(--ink);"></div></div>';
+    
+    api("/rest/v1/leave_requests?select=*,employees(full_name)&status=eq.Approved", { method:"GET" })
+      .then(function(rows){
+        var events = (rows || []).map(function(r) {
+          var endDate = new Date(r.end_date);
+          endDate.setDate(endDate.getDate() + 1); // Make end date inclusive
+          var typeColors = {
+            "Cuti Tahunan": "#3F8D58",
+            "Cuti Sakit": "#a02020",
+            "Cuti Melahirkan": "#8a5a10",
+            "Izin Khusus": "#1a5a8a",
+            "Cuti Lainnya": "#5b6b66"
+          };
+          return {
+            title: (r.employees && r.employees.full_name) + " - " + r.type,
+            start: r.start_date,
+            end: endDate.toISOString().split('T')[0],
+            backgroundColor: typeColors[r.type] || "#0E505A",
+            borderColor: "transparent"
+          };
+        });
+
+        var calendarEl = document.getElementById('fc-calendar');
+        var calendar = new FullCalendar.Calendar(calendarEl, {
+          initialView: 'dayGridMonth',
+          locale: 'id',
+          headerToolbar: {
+            left: 'prev,next today',
+            center: 'title',
+            right: 'dayGridMonth,timeGridWeek'
+          },
+          events: events,
+          height: 'auto'
+        });
+        calendar.render();
+      })
+      .catch(function(e){
+        el.innerHTML = '<div class="err">⚠ Gagal memuat kalender: ' + escHtml(e.message) + '</div>';
+      });
   }
 
   /* ================================================================
