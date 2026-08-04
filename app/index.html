@@ -833,14 +833,14 @@
   function renderNotifications(){
     var el = document.getElementById("tab-content");
     if (state.loading){ el.innerHTML = '<div class="loading-spinner"><div class="spinner"></div> Memuat data...</div>'; return; }
-    api("/rest/v1/notifications?select=*,created_by(full_name)", { method:"GET" })
+    api("/rest/v1/notifications?select=*&order=created_at.desc", { method:"GET" })
       .then(function(rows){
         rows = rows || [];
         var html = '<div class="section-title">Notifikasi Terbaru</div>' +
-          '<div class="card"><div class="table-wrap"><table><tr><th>Tanggal</th><th>Jenis</th><th>Pesan</th><th>Dari</th></tr>' +
+          '<div class="card"><div class="table-wrap"><table><tr><th>Tanggal</th><th>Jenis</th><th>Pesan</th></tr>' +
           (rows.length ? rows.map(function(n){
-            return '<tr><td>' + fmtDate(n.created_at) + '</td><td>' + escHtml(n.type||"-") + '</td><td>' + escHtml(n.message||"-") + '</td><td>' + escHtml((n.created_by && n.created_by.full_name)||"-") + '</td></tr>';
-          }).join('') : '<tr><td colspan="4" style="color:var(--muted);text-align:center;">Tidak ada notifikasi</td></tr>') +
+            return '<tr><td>' + fmtDate(n.created_at) + '</td><td>' + escHtml(n.type||"-") + '</td><td>' + escHtml(n.message||"-") + '</td></tr>';
+          }).join('') : '<tr><td colspan="3" style="color:var(--muted);text-align:center;">Tidak ada notifikasi</td></tr>') +
           '</table></div></div>';
         el.innerHTML = html;
       })
@@ -1054,10 +1054,19 @@
       var notes = document.getElementById("lv-notes").value;
       if (!start || !end){ document.getElementById("lv-error").textContent = "Tanggal wajib diisi."; return; }
       if (end < start){ document.getElementById("lv-error").textContent = "Tanggal selesai harus setelah tanggal mulai."; return; }
-      // Find employee linked to current user
-      var emp = state.employees.find(function(e){ return e.institution_email === (state.user&&state.user.email); });
-      var payload = { type:type, start_date:start, end_date:end, notes:notes, status:"Pending", created_at:new Date().toISOString() };
-      if (emp) payload.employee_id = emp.id;
+      // Find the employee record linked to the current login. auth_user_id is
+      // set automatically at signup (or by an admin) when it matches the
+      // login's email -- see fn_handle_new_user in schema.sql. This used to
+      // compare institution_email to the session email on every submit,
+      // which silently produced a raw database error if they didn't match
+      // exactly; this is both more reliable and fails with a clear message.
+      var currentUid = state.user && state.user.id;
+      var emp = currentUid ? state.employees.find(function(e){ return e.auth_user_id === currentUid; }) : null;
+      if (!emp){
+        document.getElementById("lv-error").textContent = "Akun Anda belum tertaut ke data pegawai. Hubungi admin/HRD untuk menautkan email institusi Anda.";
+        return;
+      }
+      var payload = { type:type, start_date:start, end_date:end, notes:notes, status:"Pending", created_at:new Date().toISOString(), employee_id: emp.id };
       api("/rest/v1/leave_requests", { method:"POST", headers:{Prefer:"return=minimal"}, body:payload })
         .then(function(){ closeLeaveModal(); loadLeaveRequests(); })
         .catch(function(e){ document.getElementById("lv-error").textContent = "Gagal: " + e.message; });
@@ -1219,11 +1228,20 @@
             updated_at: new Date().toISOString()
           };
         }).filter(function(r){ return r.full_name; });
-        if (!rows.length){ errEl.textContent = "Tidak ada baris valid ditemukan."; btn.disabled=false; btn.textContent="Import Data"; return; }
-        api("/rest/v1/employees", { method:"POST", headers:{ Prefer:"resolution=merge-duplicates,return=minimal" }, body: rows })
+        var withoutNumber = rows.filter(function(r){ return !r.employee_number; }).length;
+        rows = rows.filter(function(r){ return r.employee_number; });
+        if (!rows.length){ errEl.textContent = "Tidak ada baris valid ditemukan (No. Pegawai wajib diisi)."; btn.disabled=false; btn.textContent="Import Data"; return; }
+        // on_conflict=employee_number: without this, PostgREST's upsert
+        // conflict target defaults to the primary key (id), which every
+        // imported row lacks (id is generated fresh per row) -- so
+        // "merge-duplicates" never actually found a duplicate to merge, and
+        // re-importing an existing employee_number instead hard-failed on
+        // its unique constraint. This makes re-import genuinely update
+        // existing employees by employee_number, as the Prefer header intends.
+        api("/rest/v1/employees?on_conflict=employee_number", { method:"POST", headers:{ Prefer:"resolution=merge-duplicates,return=minimal" }, body: rows })
           .then(function(){
             errEl.style.color = "var(--badge-green-fg)";
-            errEl.textContent = "✓ " + rows.length + " baris berhasil diimpor!";
+            errEl.textContent = "✓ " + rows.length + " baris berhasil diimpor!" + (withoutNumber ? " (" + withoutNumber + " baris dilewati: No. Pegawai kosong)" : "");
             btn.disabled=false; btn.textContent="Import Data";
             loadAll();
           })
