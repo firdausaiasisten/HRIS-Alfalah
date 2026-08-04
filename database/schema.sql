@@ -361,8 +361,64 @@ $$ language sql stable security definer set search_path = public, pg_temp;
 revoke execute on function fn_current_role() from public;
 grant execute on function fn_current_role() to authenticated;
 
--- Bootstrap: first person to sign up becomes admin automatically;
--- everyone after that gets 'pending' until an admin promotes them.
+
+-- =========================================================
+-- NOTIFICATIONS TABLE
+-- =========================================================
+
+create table if not exists notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  type text not null,
+  message text not null,
+  created_at timestamptz not null default now(),
+  is_read boolean default false
+);
+
+create index if not exists idx_notifications_user on notifications(user_id);
+create index if not exists idx_notifications_unread on notifications(is_read) where is_read = false;
+
+-- =========================================================
+-- LEAVE REQUESTS TABLE
+-- =========================================================
+create table if not exists leave_requests (
+  id uuid primary key default gen_random_uuid(),
+  employee_id uuid not null references employees(id) on delete cascade,
+  type text not null,
+  start_date date not null,
+  end_date date not null,
+  notes text,
+  status text default 'Pending',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz,
+  approver_id uuid references auth.users(id)
+);
+
+create index if not exists idx_leave_requests_employee on leave_requests(employee_id);
+create index if not exists idx_leave_requests_status on leave_requests(status);
+
+-- Trigger to create notification on insert or status change
+create or replace function fn_notify_leave() returns trigger as $$
+begin
+  if (tg_op = 'INSERT') then
+    insert into notifications(user_id, type, message) values (new.employee_id, 'Leave Request', 'Permintaan cuti baru telah diajukan.');
+  elsif (tg_op = 'UPDATE') then
+    if (old.status <> new.status) then
+      insert into notifications(user_id, type, message) values (new.employee_id, 'Leave Update', 'Status cuti Anda berubah menjadi ' || new.status);
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer;
+
+create trigger trg_notify_leave after insert or update on leave_requests for each row execute function fn_notify_leave();
+
+-- everyone after that gets 'pending' until an admin promotes them. the full policy set.
+-- Summary:
+--   * Master tables: SELECT for any authenticated user, write = admin only
+--   * employees / child tables / performance_reviews / employment_history:
+--       SELECT = admin, hrd_staff, pimpinan
+--       INSERT/UPDATE = admin, hrd_staff
 create or replace function fn_handle_new_user()
 returns trigger as $$
 declare
