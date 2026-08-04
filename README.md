@@ -1,6 +1,6 @@
 # HRIS Al-Falah
 
-Sistem Informasi Kepegawaian (HRIS) untuk **Pesantren ** —
+Sistem Informasi Kepegawaian (HRIS) untuk **Pesantren Modern Al-Falah Abu Lam U** —
 mengelola data induk pegawai, riwayat mutasi, dan penilaian kinerja, dengan
 dashboard ringkas untuk pimpinan.
 
@@ -9,10 +9,36 @@ dashboard ringkas untuk pimpinan.
 ```
 app/
   index.html        # Aplikasi utama (single-file HTML/JS, terhubung ke Supabase)
+  manifest.json      # PWA manifest
+  sw.js              # Service worker (PWA offline shell)
 database/
-  schema.sql        # Skema tabel + trigger perhitungan skor kinerja
-  rls_policies.sql   # Row Level Security policies (role-based access)
+  schema.sql                              # Skema inti + auth_user_id + notifications + leave_requests
+  rls_policies.sql                        # Row Level Security policies (role-based access)
+  batch1_family_education_documents.sql   # employee_family / employee_education / employee_documents
+  batch2_remaining_modules.sql            # contact, bank, payroll, cert, competency, training, language,
+                                           # leave balance, attendance, position/salary/transfer history,
+                                           # rewards, punishment
+  batch3_selfservice_notifications.sql    # self-service profile update + notifications triggers
+  batch4_institutional_calendar.sql       # institutional_events (kalender lembaga)
+  seed_dummy_data.sql                     # 10 pegawai contoh untuk uji coba
+  MIGRATION_NOTES.md                      # urutan eksekusi + catatan migrasi penting
+supabase/
+  functions/notify-dispatch/index.ts      # Edge Function: fan-out notifikasi ke email/push (opsional)
 ```
+
+> **Status saat ini**: seluruh file `database/*.sql` di atas sudah dieksekusi dan
+> diverifikasi terhadap project Supabase produksi (`Data HRD Al-Falah`), termasuk
+> RLS, trigger, dan data contoh (13 pegawai total). Edge Function `notify-dispatch`
+> sudah ter-deploy tapi masih dorman (butuh secrets email/push milik Anda sendiri —
+> lihat `database/MIGRATION_NOTES.md`).
+>
+> ⚠️ **`app/index.html` punya dua versi berbeda yang berkembang paralel** — satu
+> versi (kalender berbasis FullCalendar) sempat di-push langsung ke GitHub di luar
+> proses ini, sementara versi lain (kalender custom + notifikasi realtime +
+> self-service + PWA) dikembangkan terpisah. File di repo ini saat ini adalah
+> **versi FullCalendar** (yang sudah ada di GitHub sebelum sesi ini). Perlu
+> diputuskan versi mana yang dipakai final sebelum development lanjut, supaya
+> pekerjaan di salah satu versi tidak tertimpa tanpa sengaja.
 
 ## Stack
 
@@ -84,34 +110,43 @@ Tidak perlu proses build — file `index.html` sudah siap pakai apa adanya.
 
 ## Roadmap Modularisasi `employees`
 
-Tabel inti `employees` sedang dipecah bertahap menjadi modul-modul anak yang
-ternormalisasi (3NF).
+Tabel inti `employees` sudah dipecah menjadi modul-modul anak yang
+ternormalisasi (3NF). **Seluruh 19 modul di roadmap awal sudah selesai
+dieksekusi ke database produksi.**
 
 | # | Modul | Status |
 |---|---|---|
-| 1 | `employee_family` (→ `employee_family_members`) | ✅ Selesai — `batch1_family_education_documents.sql` |
-| 2 | `employee_education` | ✅ Selesai — `batch1_family_education_documents.sql` |
-| 3 | `employee_documents` | ✅ Selesai (dirombak total) — `batch1_family_education_documents.sql` |
-| 4 | `employee_contact` | ⏳ Belum |
-| 5 | `employee_bank` | ⏳ Belum |
-| 6 | `employee_payroll` | ⏳ Belum |
-| 7 | `employee_certifications` | ⏳ Perlu disempurnakan (FK + audit trail) |
-| 8 | `employee_competencies` | ⏳ Perlu disempurnakan (FK + audit trail) |
-| 9 | `employee_training` | ⏳ Belum |
-| 10 | `employee_language` | ⏳ Belum |
-| 11 | `employee_leave` | ⏳ Belum |
-| 12 | `employee_attendance_setting` | ⏳ Belum |
-| 13 | `employee_position_history` | ⏳ Belum |
-| 14 | `employee_salary_history` | ⏳ Belum |
-| 15 | `employee_transfer_history` | ⏳ Belum |
+| 1 | `employee_family` (→ `employee_family_members`) | ✅ Selesai — batch1 |
+| 2 | `employee_education` | ✅ Selesai — batch1 |
+| 3 | `employee_documents` | ✅ Selesai (dirombak total) — batch1 |
+| 4 | `employee_contact` (→ `employee_contacts`) | ✅ Selesai — batch2 |
+| 5 | `employee_bank` (→ `employee_bank_accounts`) | ✅ Selesai — batch2 |
+| 6 | `employee_payroll` (→ `employee_payroll_components`) | ✅ Selesai (admin-only) — batch2 |
+| 7 | `employee_certifications` | ✅ Disempurnakan (FK + audit trail) — batch2 |
+| 8 | `employee_competencies` | ✅ Disempurnakan (FK + audit trail) — batch2 |
+| 9 | `employee_training` (→ `employee_trainings`) | ✅ Selesai — batch2 |
+| 10 | `employee_language` (→ `employee_languages`) | ✅ Selesai — batch2 |
+| 11 | `employee_leave` (→ `employee_leave_balances` + `leave_requests`) | ✅ Selesai — batch2/schema |
+| 12 | `employee_attendance_setting` | ✅ Selesai — batch2 |
+| 13 | `employee_position_history` | ✅ Selesai — batch2 |
+| 14 | `employee_salary_history` | ✅ Selesai (admin-only) — batch2 |
+| 15 | `employee_transfer_history` | ✅ Selesai — batch2 |
 | 16 | `employee_performance` | ✅ Sudah ada sebagai `performance_reviews` |
-| 17 | `employee_rewards` | ⏳ Belum |
-| 18 | `employee_punishment` | ⏳ Belum |
-| 19 | `employee_system_account` | ✅ Sudah ada sebagai `user_roles` |
+| 17 | `employee_rewards` | ✅ Selesai — batch2 |
+| 18 | `employee_punishment` | ✅ Selesai (admin-only) — batch2 |
+| 19 | `employee_system_account` | ✅ Sudah ada sebagai `user_roles` + `employees.auth_user_id` |
+
+**Fitur tambahan di luar 19 modul awal** (batch3 & batch4):
+- Self-service: pegawai bisa mengedit sebagian data kontaknya sendiri (`fn_restrict_self_update` membatasi kolom apa saja yang boleh diubah)
+- Notifikasi in-app (`notifications`) + hook ke email/push lewat Edge Function (opsional, perlu API key sendiri)
+- Pengecekan kontrak akan berakhir otomatis via `pg_cron` (harian, jam 06:00)
+- Kalender kegiatan lembaga (`institutional_events`)
 
 Setiap modul menggunakan infrastruktur generik dari `batch1_family_education_documents.sql`:
 - `fn_set_updated_at()` — trigger `BEFORE UPDATE` agar `updated_at` selalu akurat
 - `fn_hris_audit()` — trigger `AFTER INSERT/UPDATE/DELETE` yang mencatat setiap perubahan ke tabel `audit_log`
+
+Lihat `database/MIGRATION_NOTES.md` untuk urutan eksekusi dan catatan migrasi penting.
 
 ## Struktur Data Utama
 
