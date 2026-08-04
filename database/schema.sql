@@ -145,8 +145,17 @@ create table if not exists employees (
   updated_at timestamptz not null default now(),
   updated_by uuid,
   deleted_at timestamptz,
-  deleted_by uuid
+  deleted_by uuid,
+
+  -- Links this employee record to their login account, once they have one.
+  -- Nullable: not every employee has (or needs) app access. This is the
+  -- reliable way to answer "which employee is the current logged-in user",
+  -- instead of matching institution_email against the session email on
+  -- every request client-side.
+  auth_user_id uuid references auth.users(id)
 );
+
+create unique index if not exists ux_employees_auth_user on employees(auth_user_id) where auth_user_id is not null;
 
 create index if not exists idx_employees_unit on employees(unit_kerja_id);
 create index if not exists idx_employees_status on employees(status_kepegawaian_id);
@@ -202,19 +211,16 @@ create table if not exists employee_family (
 );
 create index if not exists idx_family_employee on employee_family(employee_id);
 
-create table if not exists employee_documents (
-  id uuid primary key default gen_random_uuid(),
-  employee_id uuid not null references employees(id) on delete cascade,
-  document_type text not null,
-  document_number text,
-  file_path text,
-  notes text,
-  is_attached boolean default false,
-  created_at timestamptz not null default now(),
-  created_by uuid,
-  deleted_at timestamptz
-);
-create index if not exists idx_docs_employee on employee_documents(employee_id);
+-- NOTE: the legacy `employee_documents` table used to be defined here. It has
+-- been removed because `batch1_family_education_documents.sql` defines a
+-- superseding, richer version of this table (per the README's own
+-- modularization roadmap, this module is already "done"). Keeping both
+-- definitions caused `create table if not exists` to silently keep this old,
+-- flatter version active and skip the new one -- confirmed by actually
+-- running both files in order against Postgres. If you're setting this
+-- project up fresh, run schema.sql, then rls_policies.sql, then
+-- batch1_family_education_documents.sql, and `employee_documents` will be
+-- created there instead, in its intended form.
 
 create table if not exists employee_teaching_assignment (
   id uuid primary key default gen_random_uuid(),
@@ -399,17 +405,29 @@ create index if not exists idx_leave_requests_status on leave_requests(status);
 
 -- Trigger to create notification on insert or status change
 create or replace function fn_notify_leave() returns trigger as $$
+declare
+  v_auth_user_id uuid;
 begin
+  -- employee_id is an employees.id, not an auth.users.id -- resolve the
+  -- actual linked login account before inserting into notifications, which
+  -- has a real FK to auth.users. If this employee has no linked account yet
+  -- (auth_user_id is null), there's no one to notify; skip quietly rather
+  -- than inserting a row that fails the foreign key or points nowhere.
+  select auth_user_id into v_auth_user_id from employees where id = new.employee_id;
+  if v_auth_user_id is null then
+    return new;
+  end if;
+
   if (tg_op = 'INSERT') then
-    insert into notifications(user_id, type, message) values (new.employee_id, 'Leave Request', 'Permintaan cuti baru telah diajukan.');
+    insert into notifications(user_id, type, message) values (v_auth_user_id, 'Leave Request', 'Permintaan cuti baru telah diajukan.');
   elsif (tg_op = 'UPDATE') then
     if (old.status <> new.status) then
-      insert into notifications(user_id, type, message) values (new.employee_id, 'Leave Update', 'Status cuti Anda berubah menjadi ' || new.status);
+      insert into notifications(user_id, type, message) values (v_auth_user_id, 'Leave Update', 'Status cuti Anda berubah menjadi ' || new.status);
     end if;
   end if;
   return new;
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql security definer set search_path = public, pg_temp;
 
 create trigger trg_notify_leave after insert or update on leave_requests for each row execute function fn_notify_leave();
 
@@ -432,6 +450,17 @@ begin
     coalesce(new.raw_user_meta_data->>'full_name', new.email)
   )
   on conflict (user_id) do nothing;
+
+  -- Auto-link this login to a matching employee record, if one exists and
+  -- isn't already linked to a different account. This is what lets the app
+  -- reliably answer "which employee is the current user" (leave requests,
+  -- notifications) instead of comparing email strings on every request.
+  update employees
+  set auth_user_id = new.id
+  where new.email is not null
+    and lower(institution_email) = lower(new.email)
+    and auth_user_id is null;
+
   return new;
 end;
 $$ language plpgsql security definer set search_path = public, pg_temp;

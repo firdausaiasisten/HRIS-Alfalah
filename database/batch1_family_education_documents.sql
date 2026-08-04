@@ -172,7 +172,12 @@ create table if not exists employee_education (
   gpa numeric(4,2) check (gpa is null or (gpa >= 0 and gpa <= 4)),
   start_date date,
   end_date date,
-  certificate_document_id uuid references employee_documents(id),
+  -- Plain column here on purpose: employee_documents isn't created until
+  -- later in this same file, so an inline `references employee_documents(id)`
+  -- would fail (or silently bind to a stale same-named table left over from
+  -- elsewhere). The real FK is added at the bottom of this file, once
+  -- employee_documents actually exists -- see "Wire the FK..." below.
+  certificate_document_id uuid,
   is_primary boolean not null default false,
   notes text,
 

@@ -9,11 +9,12 @@ alter table employees enable row level security;
 alter table employee_certifications enable row level security;
 alter table employee_competencies enable row level security;
 alter table employee_family enable row level security;
-alter table employee_documents enable row level security;
 alter table employee_teaching_assignment enable row level security;
 alter table performance_reviews enable row level security;
 alter table employment_history enable row level security;
 alter table user_roles enable row level security;
+alter table notifications enable row level security;
+alter table leave_requests enable row level security;
 alter table m_unit_kerja enable row level security;
 alter table m_departemen enable row level security;
 alter table m_jabatan enable row level security;
@@ -41,7 +42,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['employee_certifications','employee_competencies','employee_family','employee_documents','employee_teaching_assignment','performance_reviews','employment_history']
+  foreach t in array array['employee_certifications','employee_competencies','employee_family','employee_teaching_assignment','performance_reviews','employment_history']
   loop
     execute format('create policy "select all roles" on %I for select using ((select fn_current_role()) in (''admin'',''hrd_staff'',''pimpinan''))', t);
     execute format('create policy "insert admin+hrd" on %I for insert with check ((select fn_current_role()) in (''admin'',''hrd_staff''))', t);
@@ -49,6 +50,26 @@ begin
     execute format('create policy "delete admin only" on %I for delete using ((select fn_current_role()) = ''admin'')', t);
   end loop;
 end $$;
+
+-- ===== notifications: HR activity feed, not per-user personal notifications
+-- (the client shows the same list to every admin/hrd_staff/pimpinan user with
+-- no user_id filter) -- select matches that usage; writes are trigger-only
+-- via fn_notify_leave (security definer), but admin/hrd_staff can also
+-- manage entries manually (e.g. from Table Editor) for consistency with
+-- every other table's write pattern in this schema. =====
+create policy "select all roles" on notifications for select using ((select fn_current_role()) in ('admin','hrd_staff','pimpinan'));
+create policy "insert admin+hrd" on notifications for insert with check ((select fn_current_role()) in ('admin','hrd_staff'));
+create policy "update admin+hrd" on notifications for update using ((select fn_current_role()) in ('admin','hrd_staff')) with check ((select fn_current_role()) in ('admin','hrd_staff'));
+create policy "delete admin only" on notifications for delete using ((select fn_current_role()) = 'admin');
+
+-- ===== leave_requests: same access pattern as the employee child tables
+-- above (this is where "select all roles"/"insert admin+hrd" was missing
+-- entirely, leaving the table with RLS enabled but zero policies -- i.e.
+-- fully locked for anon/authenticated until this was added). =====
+create policy "select all roles" on leave_requests for select using ((select fn_current_role()) in ('admin','hrd_staff','pimpinan'));
+create policy "insert admin+hrd" on leave_requests for insert with check ((select fn_current_role()) in ('admin','hrd_staff'));
+create policy "update admin+hrd" on leave_requests for update using ((select fn_current_role()) in ('admin','hrd_staff')) with check ((select fn_current_role()) in ('admin','hrd_staff'));
+create policy "delete admin only" on leave_requests for delete using ((select fn_current_role()) = 'admin');
 
 -- ===== employees (core) =====
 create policy "select all roles" on employees for select using ((select fn_current_role()) in ('admin','hrd_staff','pimpinan'));
