@@ -26,19 +26,28 @@ supabase/
   functions/notify-dispatch/index.ts      # Edge Function: fan-out notifikasi ke email/push (opsional)
 ```
 
-> **Status saat ini**: seluruh file `database/*.sql` di atas sudah dieksekusi dan
+> **Status saat ini**: seluruh file `database/*.sql` sudah dieksekusi dan
 > diverifikasi terhadap project Supabase produksi (`Data HRD Al-Falah`), termasuk
 > RLS, trigger, dan data contoh (13 pegawai total). Edge Function `notify-dispatch`
 > sudah ter-deploy tapi masih dorman (butuh secrets email/push milik Anda sendiri —
 > lihat `database/MIGRATION_NOTES.md`).
 >
-> ⚠️ **`app/index.html` punya dua versi berbeda yang berkembang paralel** — satu
-> versi (kalender berbasis FullCalendar) sempat di-push langsung ke GitHub di luar
-> proses ini, sementara versi lain (kalender custom + notifikasi realtime +
-> self-service + PWA) dikembangkan terpisah. File di repo ini saat ini adalah
-> **versi FullCalendar** (yang sudah ada di GitHub sebelum sesi ini). Perlu
-> diputuskan versi mana yang dipakai final sebelum development lanjut, supaya
-> pekerjaan di salah satu versi tidak tertimpa tanpa sengaja.
+> `app/index.html` memakai versi lengkap (kalender custom bulanan + integrasi
+> hari libur nasional + notifikasi realtime + self-service profile + PWA +
+> role-based UI + export iCal/Google Calendar). Realtime untuk tabel
+> `notifications` sudah diaktifkan di level database (`supabase_realtime`
+> publication) — sebelumnya tabel ini belum terdaftar sehingga listener
+> notifikasi live tidak akan pernah menerima event meski kodenya benar.
+>
+> Catatan cakupan: UI saat ini fokus pada Dashboard, Biodata, Kalender, dan
+> Notifikasi. Modul-modul baru dari batch2 (`employee_contacts`,
+> `employee_bank_accounts`, `employee_payroll_components`,
+> `employee_trainings`, `employee_languages`, `employee_leave_balances`,
+> `employee_attendance_settings`, riwayat jabatan/gaji/mutasi, rewards,
+> punishment) **sudah ada dan berfungsi di database**, tapi belum punya
+> tampilan/form khusus di `app/index.html` — masih perlu dibangun form
+> UI-nya kalau ingin dikelola langsung dari aplikasi, bukan lewat Supabase
+> Table Editor.
 
 ## Stack
 

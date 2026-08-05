@@ -21,9 +21,13 @@
 
   <!-- Chart.js for Analytics -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-
-  <!-- FullCalendar -->
-  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+  <!-- Supabase JS SDK -- used ONLY for the Realtime notification listener
+       (Fitur 1). Everything else in this app deliberately stays on raw
+       fetch() calls to the REST API, per the project's existing "no heavy
+       SDK" design -- Realtime's WebSocket/Phoenix-channel protocol is
+       complex enough that hand-rolling it would be a real correctness
+       risk I can't fully verify without a live server to test against. -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 
   <style>
     /* ============================================================
@@ -420,6 +424,17 @@
       .hb { padding: 1rem; }
       .hb h1 { font-size: 15px; }
     }
+
+    /* ===== FITUR 2: Role-Based UI Customization =====
+       [data-role] on <html> is kept in sync with the session (see
+       syncRoleAttribute()). These utility classes let any element declare
+       "only show me for role X" purely in markup, no per-element JS needed. */
+    .role-admin-only, .role-hrd-only, .role-pimpinan-only { display: none; }
+    html[data-role="admin"] .role-admin-only { display: revert; }
+    html[data-role="hrd_staff"] .role-hrd-only { display: revert; }
+    html[data-role="pimpinan"] .role-pimpinan-only { display: revert; }
+    html[data-role="pimpinan"] .role-hide-pimpinan,
+    html[data-role="hrd_staff"] .role-hide-hrd { display: none !important; }
   </style>
 </head>
 <body>
@@ -462,6 +477,34 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="event-modal">
+  <div class="modal">
+    <h3 id="ev-modal-title">🏫 Jadwal Kegiatan Lembaga</h3>
+    <div class="field"><label>Nama Kegiatan</label><input type="text" id="ev-title" /></div>
+    <div class="field">
+      <label>Kategori</label>
+      <select id="ev-category">
+        <option value="Akademik">Akademik</option>
+        <option value="Keagamaan">Keagamaan</option>
+        <option value="Administrasi">Administrasi</option>
+        <option value="Umum">Umum</option>
+      </select>
+    </div>
+    <div class="grid grid-2">
+      <div class="field"><label>Tanggal Mulai</label><input type="date" id="ev-start" /></div>
+      <div class="field"><label>Tanggal Selesai</label><input type="date" id="ev-end" /></div>
+    </div>
+    <div class="field"><label>Deskripsi (opsional)</label><textarea id="ev-desc" rows="3" style="resize:vertical;"></textarea></div>
+    <div id="ev-error" class="err"></div>
+    <div class="modal-footer">
+      <button class="btn" id="ev-delete-btn" style="display:none;margin-right:auto;color:var(--badge-red-fg);border-color:var(--badge-red-fg);">🗑 Hapus</button>
+      <button class="btn" onclick="closeEventModal()">Batal</button>
+      <button class="btn btn-primary" id="ev-save-btn">💾 Simpan</button>
+    </div>
+  </div>
+</div>
+
+
 <script>
 (function(){
   /* ================================================================
@@ -476,7 +519,9 @@
     employees: [], masters: {}, reviews: [], leaveRequests: [],
     selectedEmployeeId: null, editing: false, loading: false, errorMsg: "",
     teaching: [], history: [],
-    chartInstances: {}
+    chartInstances: {},
+    calendarYear: null, calendarMonth: null, selfEditing: false,
+    realtimeChannel: null, realtimeClient: null
   };
 
   /* ================================================================
@@ -487,25 +532,33 @@
       label: "Admin",
       tabs: ["dashboard", "analytics", "calendar", "biodata", "leave_management", "notifications", "export_import"],
       canEdit: true, canApproveLeave: true, canExport: true, canImport: true,
-      canManageRoles: true
+      canManageRoles: true, canViewSalary: true, canViewDisciplinary: true, canManageEvents: true
     },
     hrd_staff: {
       label: "Staf HRD",
       tabs: ["dashboard", "analytics", "calendar", "biodata", "leave_management", "notifications", "export_import"],
       canEdit: true, canApproveLeave: true, canExport: true, canImport: false,
-      canManageRoles: false
+      canManageRoles: false, canViewSalary: false, canViewDisciplinary: false, canManageEvents: false
     },
     pimpinan: {
       label: "Pimpinan",
       tabs: ["dashboard", "analytics", "calendar", "biodata", "notifications"],
       canEdit: false, canApproveLeave: false, canExport: true, canImport: false,
-      canManageRoles: false
+      canManageRoles: false, canViewSalary: false, canViewDisciplinary: false, canManageEvents: false
     }
   };
 
-  function roleConfig(){ return ROLE_CONFIG[state.role] || { label: state.role, tabs:["dashboard"], canEdit:false, canApproveLeave:false, canExport:false, canImport:false }; }
+  function roleConfig(){ return ROLE_CONFIG[state.role] || { label: state.role, tabs:["dashboard"], canEdit:false, canApproveLeave:false, canExport:false, canImport:false, canViewSalary:false, canViewDisciplinary:false, canManageEvents:false }; }
   function can(perm){ return !!roleConfig()[perm]; }
   function hasTab(tab){ return (roleConfig().tabs || []).indexOf(tab) >= 0; }
+  // FITUR 2 (Role-Based UI Customization): keeps a data-role attribute on
+  // <html> in sync with the logged-in role, so CSS alone can show/hide
+  // elements per role via `[data-role="..."] .role-admin-only { display:none }`
+  // -- see the .role-*-only utility classes in the stylesheet. This mirrors
+  // what RLS already enforces server-side (e.g. canViewSalary/canViewDisciplinary
+  // above match the admin-only RLS on payroll/salary_history/punishment), so
+  // the UI doesn't show a control that would just fail or return nothing.
+  function syncRoleAttribute(){ document.documentElement.setAttribute('data-role', state.role || 'none'); }
 
   /* ================================================================
      DARK MODE
@@ -611,7 +664,7 @@
   }
   function onAuthed(data){
     state.session = data; state.user = data.user; state.errorMsg = "";
-    fetchRole().then(function(){ state.view = "app"; loadAll(); });
+    fetchRole().then(function(){ state.view = "app"; loadAll(); initRealtimeNotifications(); });
   }
   function fetchRole(){
     return api("/rest/v1/user_roles?select=role,full_name&user_id=eq." + state.user.id)
@@ -623,8 +676,62 @@
   }
   function signOut(){
     destroyCharts();
+    teardownRealtimeNotifications();
     state.session=null; state.user=null; state.role=null; state.view="login"; state.authMode="login";
     render();
+  }
+
+  /* ================================================================
+     FITUR 1 (client side): Supabase Realtime listener for live
+     notifications. NOTE ON TESTING: this connects to a live WebSocket
+     endpoint on your actual Supabase project -- nothing in this sandbox
+     can open that connection, so this is verified for JS syntax
+     correctness and defensive behavior (never throwing if the SDK isn't
+     loaded or the user isn't authenticated) but NOT for an actual live
+     round-trip. Verify on your real project: open two browser sessions
+     (one admin, one hrd_staff), submit a leave request in one, and the
+     other should see the notification badge update without a manual
+     refresh.
+     ================================================================ */
+  function initRealtimeNotifications(){
+    if (!window.supabase || !state.session || !state.user) return;
+    teardownRealtimeNotifications();
+    try {
+      state.realtimeClient = window.supabase.createClient(SUPABASE_URL, ANON_KEY);
+      state.realtimeClient.realtime.setAuth(state.session.access_token);
+      state.realtimeChannel = state.realtimeClient
+        .channel("notifications-" + state.user.id)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, function(payload){
+          // The realtime socket carries the same JWT as REST calls, so RLS
+          // (rls_policies.sql + batch2/3: admin/hrd_staff/pimpinan only)
+          // already restricts which INSERTs this client is even shown --
+          // no extra client-side role filtering needed here.
+          showNotificationToast(payload.new);
+          if (state.session && state.view === "notifications"){ render(); }
+        })
+        .subscribe();
+    } catch (e){
+      console.warn("Realtime notifications unavailable:", e.message);
+    }
+  }
+  function teardownRealtimeNotifications(){
+    if (state.realtimeChannel){ try { state.realtimeChannel.unsubscribe(); } catch(e){} state.realtimeChannel = null; }
+    state.realtimeClient = null;
+  }
+  function showNotificationToast(n){
+    var box = document.getElementById("toast-box");
+    if (!box){
+      box = document.createElement("div");
+      box.id = "toast-box";
+      box.style.cssText = "position:fixed;bottom:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:320px;";
+      document.body.appendChild(box);
+    }
+    var toast = document.createElement("div");
+    toast.className = "card";
+    toast.style.cssText = "padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,.15);animation:toast-in .2s ease-out;";
+    toast.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:2px;">🔔 ' + escHtml(n.type||"Notifikasi") + '</div><div style="font-size:12px;color:var(--muted);">' + escHtml(n.message||"") + '</div>';
+    box.appendChild(toast);
+    setTimeout(function(){ if (toast.parentNode) toast.parentNode.removeChild(toast); }, 6000);
   }
 
   /* ================================================================
@@ -662,6 +769,7 @@
      ================================================================ */
   function render(){
     destroyCharts();
+    syncRoleAttribute();
     if (state.view === "login" || !state.session){ renderLogin(); return; }
     if (state.role === "pending"){ renderPending(); return; }
     renderApp();
@@ -781,46 +889,254 @@
   }
 
   /* ================================================================
-     RENDER: CALENDAR
+     RENDER: CALENDAR (table-grid, sidebar legend)
      ================================================================ */
-  function renderCalendar(){
-    var el = document.getElementById("tab-content");
-    el.innerHTML = '<div class="section-title">📅 Kalender Cuti & Izin</div><div class="card"><div id="fc-calendar" style="min-height:500px; color: var(--ink);"></div></div>';
-    
-    api("/rest/v1/leave_requests?select=*,employees(full_name)&status=eq.Approved", { method:"GET" })
-      .then(function(rows){
-        var events = (rows || []).map(function(r) {
-          var endDate = new Date(r.end_date);
-          endDate.setDate(endDate.getDate() + 1); // Make end date inclusive
-          var typeColors = {
-            "Cuti Tahunan": "#3F8D58",
-            "Cuti Sakit": "#a02020",
-            "Cuti Melahirkan": "#8a5a10",
-            "Izin Khusus": "#1a5a8a",
-            "Cuti Lainnya": "#5b6b66"
-          };
-          return {
-            title: (r.employees && r.employees.full_name) + " - " + r.type,
-            start: r.start_date,
-            end: endDate.toISOString().split('T')[0],
-            backgroundColor: typeColors[r.type] || "#0E505A",
-            borderColor: "transparent"
-          };
-        });
+  var DAY_NAMES_ID = ["Sen","Sel","Rab","Kam","Jum","Sab","Min"];
+  var MONTH_NAMES_ID = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"];
+  var LEAVE_TYPE_COLORS = {
+    "Cuti Tahunan":    { bg:"var(--badge-green-bg)", fg:"var(--badge-green-fg)" },
+    "Cuti Sakit":      { bg:"var(--badge-red-bg)",   fg:"var(--badge-red-fg)" },
+    "Cuti Melahirkan": { bg:"var(--badge-amber-bg)", fg:"var(--badge-amber-fg)" },
+    "Izin Khusus":     { bg:"var(--badge-blue-bg)",  fg:"var(--badge-blue-fg)" },
+    "Cuti Lainnya":    { bg:"var(--badge-gray-bg)",  fg:"var(--badge-gray-fg)" }
+  };
+  function leaveColor(type){ return LEAVE_TYPE_COLORS[type] || LEAVE_TYPE_COLORS["Cuti Lainnya"]; }
 
-        var calendarEl = document.getElementById('fc-calendar');
-        var calendar = new FullCalendar.Calendar(calendarEl, {
-          initialView: 'dayGridMonth',
-          locale: 'id',
-          headerToolbar: {
-            left: 'prev,next today',
-            center: 'title',
-            right: 'dayGridMonth,timeGridWeek'
-          },
-          events: events,
-          height: 'auto'
+  // FITUR: Kalender kegiatan lembaga (institutional_events, batch4) --
+  // warna sengaja beda dari LEAVE_TYPE_COLORS dan tanda hari libur (merah/
+  // amber) di atas, supaya ketiganya tidak tertukar secara visual.
+  var EVENT_CATEGORY_COLORS = {
+    "Akademik":      "#4F46E5",
+    "Keagamaan":     "#0d9488",
+    "Administrasi":  "#64748b",
+    "Umum":          "#7c3aed"
+  };
+  function eventColor(cat){ return EVENT_CATEGORY_COLORS[cat] || EVENT_CATEGORY_COLORS["Umum"]; }
+
+  /* ================================================================
+     INTEGRASI HARI LIBUR/PENTING INDONESIA
+     Sumber: guangrei/APIHariLibur_V2 (GitHub, GPL-3.0, auto-updated dari
+     Google Calendar). Diambil saat runtime lewat fetch() -- tidak
+     menyalin kode sumbernya, jadi tidak mewarisi lisensi GPL ke aplikasi
+     ini. Hanya mencakup tahun berjalan (lihat catatan di file sumbernya);
+     kalau pengguna menavigasi ke tahun lain, sel kalender untuk tahun itu
+     sederhananya tidak mendapat tanda hari libur -- bukan error.
+     ================================================================ */
+  var HOLIDAY_SOURCE_URL = "https://raw.githubusercontent.com/guangrei/APIHariLibur_V2/main/calendar.min.json";
+  var HOLIDAY_CACHE_KEY = "hris-holiday-cache-v1";
+  var HOLIDAY_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+  function parseHolidayData(raw){
+    var out = {};
+    Object.keys(raw || {}).forEach(function(key){
+      if (key === "info") return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+      var v = raw[key];
+      out[key] = {
+        holiday: !!v.holiday,
+        summary: (v.summary && v.summary.length) ? v.summary.join(", ") : "",
+        description: (v.description && v.description.length) ? v.description.join(", ") : ""
+      };
+    });
+    return out;
+  }
+  function getCachedHolidays(now){
+    now = now || Date.now();
+    try {
+      var raw = localStorage.getItem(HOLIDAY_CACHE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.fetchedAt !== "number" || !parsed.data) return null;
+      if (now - parsed.fetchedAt > HOLIDAY_CACHE_MAX_AGE_MS) return null;
+      return parsed.data;
+    } catch (e){ return null; }
+  }
+  function setCachedHolidays(data){
+    try { localStorage.setItem(HOLIDAY_CACHE_KEY, JSON.stringify({ fetchedAt: Date.now(), data: data })); } catch (e){}
+  }
+  function loadHolidays(){
+    var cached = getCachedHolidays();
+    if (cached) return Promise.resolve(cached);
+    return fetch(HOLIDAY_SOURCE_URL).then(function(res){
+      if (!res.ok) throw new Error("status " + res.status);
+      return res.json();
+    }).then(function(raw){
+      var parsed = parseHolidayData(raw);
+      setCachedHolidays(parsed);
+      return parsed;
+    }).catch(function(e){
+      console.warn("Gagal memuat data hari libur (kalender tetap jalan tanpa tanda hari libur):", e.message);
+      return {}; // graceful degradation -- the calendar itself must never break because of this
+    });
+  }
+
+  function pad2(n){ return n < 10 ? "0"+n : ""+n; }
+  function ymdStr(y, m, d){ return y + "-" + pad2(m+1) + "-" + pad2(d); }
+  function daysInMonth(y, m){ return new Date(y, m+1, 0).getDate(); }
+  function mondayIndex(y, m, d){ return (new Date(y, m, d).getDay() + 6) % 7; }
+
+  function buildMonthGrid(year, month0){
+    var total = daysInMonth(year, month0);
+    var firstIdx = mondayIndex(year, month0, 1);
+    var cells = [];
+    for (var i=0; i<firstIdx; i++) cells.push({ date:null, day:null });
+    for (var d=1; d<=total; d++) cells.push({ date: ymdStr(year, month0, d), day: d });
+    while (cells.length % 7 !== 0) cells.push({ date:null, day:null });
+    var weeks = [];
+    for (var i=0; i<cells.length; i+=7) weeks.push(cells.slice(i, i+7));
+    return weeks;
+  }
+
+  function distributeEventsByDay(rows, gridStart, gridEnd){
+    var byDay = {};
+    (rows||[]).forEach(function(r){
+      var start = r.start_date < gridStart ? gridStart : r.start_date;
+      var end = r.end_date > gridEnd ? gridEnd : r.end_date;
+      if (start > end) return;
+      var p = start.split("-").map(Number);
+      var cursor = new Date(p[0], p[1]-1, p[2]);
+      var ep = end.split("-").map(Number);
+      var endDate = new Date(ep[0], ep[1]-1, ep[2]);
+      while (cursor <= endDate){
+        var key = ymdStr(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+        (byDay[key] = byDay[key] || []).push({
+          employeeName: (r.employees && r.employees.full_name) || "-",
+          type: r.type, status: r.status, id: r.id
         });
-        calendar.render();
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    });
+    return byDay;
+  }
+
+  function renderCalendar(){
+    if (state.calendarYear == null){ var t = new Date(); state.calendarYear = t.getFullYear(); state.calendarMonth = t.getMonth(); }
+    var el = document.getElementById("tab-content");
+    el.innerHTML = '<div class="loading-spinner"><div class="spinner"></div> Memuat kalender...</div>';
+
+    Promise.all([
+      api("/rest/v1/leave_requests?select=*,employees(full_name)&status=eq.Approved", { method:"GET" }),
+      loadHolidays(),
+      api("/rest/v1/institutional_events?select=*&order=start_date.asc", { method:"GET" }).catch(function(){ return []; })
+    ])
+      .then(function(results){
+        var rows = results[0], holidays = results[1] || {}, events = results[2] || [];
+        var year = state.calendarYear, month0 = state.calendarMonth;
+        var weeks = buildMonthGrid(year, month0);
+        var gridStart = weeks[0][0].date || ymdStr(year, month0, 1);
+        var lastRow = weeks[weeks.length-1];
+        var gridEnd = lastRow[6].date || ymdStr(year, month0, daysInMonth(year, month0));
+        // gridStart/gridEnd above only cover in-month cells; leading/trailing
+        // blanks are never populated anyway, so restricting distribution to
+        // the month itself (not the padded grid) is correct and simpler.
+        gridStart = ymdStr(year, month0, 1);
+        gridEnd = ymdStr(year, month0, daysInMonth(year, month0));
+        var byDay = distributeEventsByDay(rows, gridStart, gridEnd);
+        var eventsByDay = {};
+        events.forEach(function(ev){
+          var s = ev.start_date < gridStart ? gridStart : ev.start_date;
+          var e2 = ev.end_date > gridEnd ? gridEnd : ev.end_date;
+          if (s > e2) return;
+          var p = s.split("-").map(Number), cursor = new Date(p[0],p[1]-1,p[2]);
+          var ep = e2.split("-").map(Number), endDate = new Date(ep[0],ep[1]-1,ep[2]);
+          while (cursor <= endDate){
+            var key = ymdStr(cursor.getFullYear(), cursor.getMonth(), cursor.getDate());
+            (eventsByDay[key] = eventsByDay[key] || []).push(ev);
+            cursor.setDate(cursor.getDate()+1);
+          }
+        });
+        var eventCategoriesPresent = {};
+        events.forEach(function(ev){ eventCategoriesPresent[ev.category] = true; });
+        var legendCategories = Object.keys(EVENT_CATEGORY_COLORS).filter(function(c){ return eventCategoriesPresent[c]; });
+
+        var typesPresent = {};
+        Object.keys(byDay).forEach(function(k){ byDay[k].forEach(function(e){ typesPresent[e.type] = true; }); });
+        var legendTypes = Object.keys(LEAVE_TYPE_COLORS).filter(function(t){ return typesPresent[t]; });
+        if (!legendTypes.length) legendTypes = Object.keys(LEAVE_TYPE_COLORS);
+
+        var todayStr = ymdStr(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+
+        var html = '<div class="card" style="padding:0;overflow:hidden;">' +
+          '<div style="display:flex;flex-wrap:wrap;">' +
+          '<div style="width:200px;flex-shrink:0;background:var(--brand-dark);color:#fff;padding:20px 16px;">' +
+            '<div style="font-family:\'Philosopher\',serif;font-size:24px;font-weight:700;line-height:1.15;">' + MONTH_NAMES_ID[month0] + '</div>' +
+            '<div style="font-family:\'Philosopher\',serif;font-size:24px;font-weight:700;margin-bottom:14px;">' + year + '</div>' +
+            '<div class="btn-group" style="margin-bottom:18px;">' +
+              '<button class="btn btn-sm" id="cal-prev" style="background:rgba(255,255,255,.15);color:#fff;border:none;">‹</button>' +
+              '<button class="btn btn-sm" id="cal-today" style="background:rgba(255,255,255,.15);color:#fff;border:none;">Hari ini</button>' +
+              '<button class="btn btn-sm" id="cal-next" style="background:rgba(255,255,255,.15);color:#fff;border:none;">›</button>' +
+            '</div>' +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--brand-light);margin-bottom:10px;">Jenis Cuti</div>' +
+            legendTypes.map(function(t){
+              var c = leaveColor(t);
+              return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;">' +
+                '<span style="width:10px;height:10px;border-radius:50%;background:' + c.fg + ';flex-shrink:0;"></span>' +
+                '<span style="font-size:12px;">' + escHtml(t) + '</span></div>';
+            }).join('') +
+            '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--brand-light);margin:14px 0 10px;">Kalender Indonesia</div>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;"><span style="width:10px;height:10px;border-radius:50%;background:#e35c5c;flex-shrink:0;"></span><span style="font-size:12px;">Hari Libur Nasional</span></div>' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;"><span style="width:10px;height:10px;border-radius:50%;border:2px solid #e3a53c;background:transparent;flex-shrink:0;"></span><span style="font-size:12px;">Hari Penting (bukan libur)</span></div>' +
+            (can("canManageEvents") ? '<button class="btn btn-sm" id="cal-add-event" style="width:100%;margin-top:6px;margin-bottom:10px;background:rgba(255,255,255,.15);color:#fff;border:none;">+ Tambah Jadwal</button>' : '') +
+            (legendCategories.length ? '<div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--brand-light);margin:14px 0 10px;">Kegiatan Lembaga</div>' +
+              legendCategories.map(function(c){
+                return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;"><span style="width:10px;height:10px;border-radius:2px;background:' + eventColor(c) + ';flex-shrink:0;"></span><span style="font-size:12px;">' + escHtml(c) + '</span></div>';
+              }).join('') : '') +
+          '</div>' +
+          '<div style="flex:1;min-width:280px;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));">' +
+          DAY_NAMES_ID.map(function(d){ return '<div style="background:var(--surface-2);padding:8px 6px;font-size:12px;font-weight:600;text-align:center;border-bottom:1px solid var(--border);color:var(--ink-2);">' + d + '</div>'; }).join('') +
+          weeks.map(function(week){
+            return week.map(function(cell, i){
+              if (cell.day === null) return '<div style="border-bottom:1px solid var(--border);' + (i<6?'border-right:1px solid var(--border);':'') + 'min-height:64px;background:var(--surface-2);"></div>';
+              var events = byDay[cell.date] || [];
+              var isToday = cell.date === todayStr;
+              var holiday = holidays[cell.date] || null;
+              var dayNumHtml;
+              if (holiday && holiday.holiday){
+                dayNumHtml = '<div title="' + escHtml(holiday.summary) + '" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#e35c5c;color:#fff;font-size:11px;font-weight:700;">' + cell.day + '</div>';
+              } else if (holiday){
+                dayNumHtml = '<div title="' + escHtml(holiday.summary) + '" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;border:2px solid #e3a53c;font-size:11px;font-weight:' + (isToday?'700':'400') + ';color:' + (isToday?'var(--brand-dark)':'var(--ink)') + ';">' + cell.day + '</div>';
+              } else {
+                dayNumHtml = '<div style="font-size:11px;font-weight:' + (isToday?'700':'400') + ';color:' + (isToday?'var(--brand-dark)':'var(--ink)') + ';">' + cell.day + '</div>';
+              }
+              var holidayLabel = holiday ? '<div style="font-size:9px;color:' + (holiday.holiday?'#e35c5c':'#b8862c') + ';margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escHtml(holiday.summary) + '</div>' : '';
+              var chips = events.slice(0,3).map(function(e){
+                var c = leaveColor(e.type);
+                return '<div title="' + escHtml(e.employeeName + ' — ' + e.type) + '" style="font-size:10px;background:' + c.bg + ';color:' + c.fg + ';border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escHtml(e.employeeName) + '</div>';
+              }).join('');
+              var more = events.length > 3 ? '<div style="font-size:9px;color:var(--muted);margin-top:2px;">+' + (events.length-3) + ' lagi</div>' : '';
+              var instEvents = eventsByDay[cell.date] || [];
+              var instChips = instEvents.slice(0,2).map(function(ev){
+                var c = eventColor(ev.category);
+                return '<div class="' + (can("canManageEvents")?'inst-event-chip':'') + '" data-event-id="' + escHtml(ev.id) + '" title="' + escHtml(ev.title + (ev.description?(' — '+ev.description):'')) + '" style="font-size:10px;border-left:3px solid ' + c + ';padding:1px 3px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink);' + (can("canManageEvents")?'cursor:pointer;':'') + '">' + escHtml(ev.title) + '</div>';
+              }).join('');
+              var instMore = instEvents.length > 2 ? '<div style="font-size:9px;color:var(--muted);margin-top:1px;">+' + (instEvents.length-2) + ' kegiatan lagi</div>' : '';
+              var addCellBtn = (can("canManageEvents")) ? '<div class="add-event-cell-btn" data-date="' + escHtml(cell.date) + '" title="Tambah jadwal di tanggal ini" style="font-size:10px;color:var(--muted);cursor:pointer;margin-top:2px;">+ jadwal</div>' : '';
+              return '<div style="border-bottom:1px solid var(--border);' + (i<6?'border-right:1px solid var(--border);':'') + 'min-height:64px;padding:4px;' + (isToday?'background:var(--metric-bg);':'') + '">' +
+                dayNumHtml + holidayLabel +
+                chips + more +
+                instChips + instMore + addCellBtn +
+              '</div>';
+            }).join('');
+          }).join('') +
+          '</div></div></div>';
+
+        el.innerHTML = html;
+        document.getElementById("cal-prev").onclick = function(){ state.calendarMonth--; if(state.calendarMonth<0){state.calendarMonth=11;state.calendarYear--;} renderCalendar(); };
+        document.getElementById("cal-next").onclick = function(){ state.calendarMonth++; if(state.calendarMonth>11){state.calendarMonth=0;state.calendarYear++;} renderCalendar(); };
+        document.getElementById("cal-today").onclick = function(){ var t=new Date(); state.calendarYear=t.getFullYear(); state.calendarMonth=t.getMonth(); renderCalendar(); };
+        if (can("canManageEvents")){
+          var addBtn = document.getElementById("cal-add-event");
+          if (addBtn) addBtn.onclick = function(){ openEventModal(null, ymdStr(year, month0, new Date().getDate())); };
+          Array.prototype.forEach.call(el.querySelectorAll(".inst-event-chip"), function(chip){
+            var evId = chip.getAttribute("data-event-id");
+            var found = events.find(function(ev){ return ev.id === evId; });
+            chip.onclick = function(){ if (found) openEventModal(found); };
+          });
+          Array.prototype.forEach.call(el.querySelectorAll(".add-event-cell-btn"), function(btn){
+            var dateStr = btn.getAttribute("data-date");
+            btn.onclick = function(){ openEventModal(null, dateStr); };
+          });
+        }
       })
       .catch(function(e){
         el.innerHTML = '<div class="err">⚠ Gagal memuat kalender: ' + escHtml(e.message) + '</div>';
@@ -1079,6 +1395,53 @@
     if(ev.target === this) closeLeaveModal();
   };
 
+  /* FITUR: Kalender kegiatan lembaga -- modal tambah/edit/hapus.
+     existingEvent: object dari institutional_events kalau mode edit, atau
+     null kalau mode tambah baru. defaultDate: dipakai untuk mode tambah,
+     mengisi tanggal mulai/selesai default supaya tidak kosong. */
+  function openEventModal(existingEvent, defaultDate){
+    var modal = document.getElementById("event-modal");
+    modal.classList.add("open");
+    document.getElementById("ev-error").textContent = "";
+    document.getElementById("ev-modal-title").textContent = existingEvent ? "🏫 Edit Jadwal Kegiatan" : "🏫 Tambah Jadwal Kegiatan";
+    document.getElementById("ev-title").value = existingEvent ? existingEvent.title : "";
+    document.getElementById("ev-category").value = existingEvent ? existingEvent.category : "Umum";
+    document.getElementById("ev-start").value = existingEvent ? existingEvent.start_date : (defaultDate || "");
+    document.getElementById("ev-end").value = existingEvent ? existingEvent.end_date : (defaultDate || "");
+    document.getElementById("ev-desc").value = existingEvent ? (existingEvent.description || "") : "";
+    var delBtn = document.getElementById("ev-delete-btn");
+    delBtn.style.display = existingEvent ? "" : "none";
+    delBtn.onclick = function(){
+      if (!existingEvent) return;
+      if (!confirm('Hapus jadwal "' + existingEvent.title + '"?')) return;
+      api("/rest/v1/institutional_events?id=eq." + existingEvent.id, { method:"DELETE", headers:{ Prefer:"return=minimal" } })
+        .then(function(){ closeEventModal(); renderCalendar(); })
+        .catch(function(e){ document.getElementById("ev-error").textContent = "Gagal menghapus: " + e.message; });
+    };
+    document.getElementById("ev-save-btn").onclick = function(){
+      var title = document.getElementById("ev-title").value.trim();
+      var category = document.getElementById("ev-category").value;
+      var start = document.getElementById("ev-start").value;
+      var end = document.getElementById("ev-end").value;
+      var desc = document.getElementById("ev-desc").value.trim();
+      if (!title){ document.getElementById("ev-error").textContent = "Nama kegiatan wajib diisi."; return; }
+      if (!start || !end){ document.getElementById("ev-error").textContent = "Tanggal wajib diisi."; return; }
+      if (end < start){ document.getElementById("ev-error").textContent = "Tanggal selesai harus setelah tanggal mulai."; return; }
+      var payload = { title: title, category: category, start_date: start, end_date: end, description: desc || null, updated_at: new Date().toISOString() };
+      var req = existingEvent
+        ? api("/rest/v1/institutional_events?id=eq." + existingEvent.id, { method:"PATCH", headers:{ Prefer:"return=minimal" }, body: payload })
+        : api("/rest/v1/institutional_events", { method:"POST", headers:{ Prefer:"return=minimal" }, body: payload });
+      req.then(function(){ closeEventModal(); renderCalendar(); })
+         .catch(function(e){ document.getElementById("ev-error").textContent = "Gagal menyimpan: " + e.message; });
+    };
+  }
+  window.closeEventModal = function(){
+    document.getElementById("event-modal").classList.remove("open");
+  };
+  document.getElementById("event-modal").onclick = function(ev){
+    if (ev.target === this) closeEventModal();
+  };
+
   /* ================================================================
      EXPORT / IMPORT (.xlsx)
      ================================================================ */
@@ -1299,6 +1662,56 @@
     }
   }
 
+  /* ================================================================
+     FITUR 3: CALENDAR INTEGRATION (iCal download + Google Calendar link,
+     no OAuth -- see calendar_integration.js in /database/testdb for the
+     standalone-tested version of this exact logic)
+     ================================================================ */
+  function pad2b(n){ return n < 10 ? "0"+n : ""+n; }
+  function toIcsDate(ymd){ return ymd.replace(/-/g, ""); }
+  function addOneDay(ymd){
+    var p = ymd.split("-").map(Number);
+    var d = new Date(p[0], p[1]-1, p[2]);
+    d.setDate(d.getDate() + 1);
+    return d.getFullYear() + "-" + pad2b(d.getMonth()+1) + "-" + pad2b(d.getDate());
+  }
+  function icsEscape(s){ return String(s||"").replace(/\\/g,"\\\\").replace(/;/g,"\\;").replace(/,/g,"\\,").replace(/\n/g,"\\n"); }
+  function buildIcsEvent(opts){
+    var uid = (opts.uid || (Date.now() + "-" + Math.random().toString(36).slice(2))) + "@hris-alfalah";
+    var dtStart = toIcsDate(opts.dateStr), dtEnd = toIcsDate(addOneDay(opts.dateStr));
+    return ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//HRIS Al-Falah//ID","BEGIN:VEVENT",
+      "UID:"+uid, "DTSTAMP:"+toIcsDate(opts.dateStr)+"T000000Z",
+      "DTSTART;VALUE=DATE:"+dtStart, "DTEND;VALUE=DATE:"+dtEnd,
+      "SUMMARY:"+icsEscape(opts.title), "DESCRIPTION:"+icsEscape(opts.description||""),
+      "END:VEVENT","END:VCALENDAR"].join("\r\n");
+  }
+  function buildGoogleCalendarUrl(opts){
+    var start = toIcsDate(opts.dateStr), end = toIcsDate(addOneDay(opts.dateStr));
+    var params = new URLSearchParams({ action:"TEMPLATE", text:opts.title, dates:start+"/"+end, details:opts.description||"" });
+    return "https://calendar.google.com/calendar/render?" + params.toString();
+  }
+  function downloadIcs(opts){
+    var blob = new Blob([buildIcsEvent(opts)], { type: "text/calendar;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = (opts.title||"event").replace(/[^a-z0-9]+/gi,"_") + ".ics";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+  function addToCalendarButtons(dateStr, title, description){
+    if (!dateStr) return "";
+    return ' <button class="btn btn-sm ical-btn" data-date="' + escHtml(dateStr) + '" data-title="' + escHtml(title) + '" data-desc="' + escHtml(description||"") + '">📅 .ics</button>' +
+      ' <a class="btn btn-sm" target="_blank" rel="noopener" href="' + buildGoogleCalendarUrl({dateStr:dateStr,title:title,description:description}) + '">📅 Google Calendar</a>';
+  }
+  function wireCalendarButtons(container){
+    var btns = container.querySelectorAll(".ical-btn");
+    for (var i=0;i<btns.length;i++){
+      btns[i].onclick = function(){
+        downloadIcs({ dateStr: this.getAttribute("data-date"), title: this.getAttribute("data-title"), description: this.getAttribute("data-desc") });
+      };
+    }
+  }
+
   function opts(list, valueField, labelField, selected){
     return '<option value="">-</option>' + list.map(function(o){
       return '<option value="' + o[valueField] + '" ' + (o[valueField]===selected?'selected':'') + '>' + escHtml(o[labelField]) + '</option>';
@@ -1318,12 +1731,36 @@
     }
     function inp(id, val, type){ return '<input id="' + id + '" type="' + (type||'text') + '" value="' + escHtml(val===null||val===undefined?"":String(val)) + '" />'; }
 
+    var isOwnProfile = e.auth_user_id && state.user && e.auth_user_id === state.user.id;
+    var selfEdit = state.selfEditing;
+
     var html = '<div style="margin-bottom:10px;"><span class="link" id="back-link">← Kembali ke daftar</span></div>';
     html += '<div class="card">';
     html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:12px;">' +
       '<div><h2 style="font-size:18px;font-weight:700;">' + escHtml(e.full_name) + '</h2><p style="color:var(--muted);font-size:13px;">' + escHtml(e.employee_number||"-") + ' · ' + escHtml((e.m_jabatan&&e.m_jabatan.nama)||"-") + '</p></div>' +
       (can("canEdit") ? '<button class="btn ' + (edit?'':'btn-primary') + '" id="edit-toggle">' + (edit?'✕ Batal':'✎ Edit Data') + '</button>' : '') +
     '</div>';
+
+    // FITUR 4: Self-Service Profile Update. Available regardless of role
+    // (canEdit) as long as this IS the logged-in user's own linked record --
+    // notably this is how `pimpinan` (canEdit:false everywhere else) can
+    // update their own contact info. Server-side, fn_restrict_self_update
+    // silently keeps every other column at its old value even if this
+    // payload somehow included them, so this whitelist is a UX nicety, not
+    // the actual security boundary.
+    if (isOwnProfile){
+      function srow(label, id, val){ return '<div class="field"><label>' + escHtml(label) + '</label>' + (selfEdit ? '<input id="' + id + '" value="' + escHtml(val||"") + '" />' : '<div style="padding:5px 0;font-size:13px;">' + escHtml(val||"-") + '</div>') + '</div>'; }
+      html += '<div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">Profil Saya' +
+        '<button class="btn btn-sm" id="self-edit-toggle">' + (selfEdit?'✕ Batal':'✎ Update Data Saya') + '</button></div>';
+      html += '<div class="grid grid-2">' +
+        srow("No. HP", "se-mobile", e.mobile_phone) +
+        srow("Email Pribadi", "se-pemail", e.personal_email) +
+        srow("Alamat", "se-address", e.address) +
+        srow("Kontak Darurat", "se-ecname", e.emergency_contact_name) +
+        srow("No. HP Kontak Darurat", "se-ecphone", e.emergency_contact_phone) +
+      '</div>';
+      if (selfEdit){ html += '<button class="btn btn-primary btn-sm" id="self-save-btn" style="margin-bottom:8px;">💾 Simpan Profil Saya</button>'; }
+    }
 
     html += '<div class="section-title">Identitas Pribadi</div><div class="grid grid-2">' +
       row("NIK", e.nik, inp("ed-nik", e.nik)) +
@@ -1348,7 +1785,9 @@
       row("Unit Kerja", (e.m_unit_kerja&&e.m_unit_kerja.nama)||"-", '<select id="ed-unit">'+opts(m.unit,"id","nama",e.unit_kerja_id)+'</select>') +
       row("Jabatan", (e.m_jabatan&&e.m_jabatan.nama)||"-", '<select id="ed-jabatan">'+opts(m.jabatan,"id","nama",e.jabatan_id)+'</select>') +
       row("Tanggal Bergabung", fmtDate(e.join_date), inp("ed-join", e.join_date, "date")) +
-      row("Kontrak Berakhir", fmtDate(e.contract_end), inp("ed-contractend", e.contract_end, "date")) +
+      (edit
+        ? '<div class="field"><label>Kontrak Berakhir</label>' + inp("ed-contractend", e.contract_end, "date") + '</div>'
+        : '<div class="field"><label>Kontrak Berakhir</label><div style="padding:5px 0;font-size:13px;">' + escHtml(e.contract_end ? fmtDate(e.contract_end) : "-") + (e.contract_end ? addToCalendarButtons(e.contract_end, "Kontrak Berakhir: " + e.full_name, "Nomor pegawai " + (e.employee_number||"-") + " — mohon tindak lanjuti perpanjangan/pemutusan kontrak.") : "") + '</div></div>') +
       row("Status Aktif", e.active_status?"Aktif":"Nonaktif", '<select id="ed-active"><option value="true" '+(e.active_status?"selected":"")+'>Aktif</option><option value="false" '+(!e.active_status?"selected":"")+'>Nonaktif</option></select>') +
     '</div>';
 
@@ -1360,8 +1799,9 @@
     html += '<div class="section-title">Payroll</div><div class="grid grid-2">' +
       row("Bank", (e.m_bank&&e.m_bank.nama)||"-", '<select id="ed-bank">'+opts(m.bank,"id","nama",e.bank_id)+'</select>') +
       row("No. Rekening", e.bank_account_number, inp("ed-rek", e.bank_account_number)) +
-      row("Gaji Pokok", fmtMoney(e.basic_salary), inp("ed-gaji", e.basic_salary, "number")) +
-      row("Tunjangan", fmtMoney(e.allowances), inp("ed-tunj", e.allowances, "number")) +
+      (can("canViewSalary")
+        ? row("Gaji Pokok", fmtMoney(e.basic_salary), inp("ed-gaji", e.basic_salary, "number")) + row("Tunjangan", fmtMoney(e.allowances), inp("ed-tunj", e.allowances, "number"))
+        : '<div class="field"><label>Gaji Pokok</label><div style="padding:5px 0;font-size:13px;color:var(--muted);">🔒 Data terbatas untuk Admin</div></div><div class="field"><label>Tunjangan</label><div style="padding:5px 0;font-size:13px;color:var(--muted);">🔒 Data terbatas untuk Admin</div></div>') +
     '</div>';
 
     if (teach){
@@ -1385,7 +1825,24 @@
     html += '</div>';
 
     el.innerHTML = html;
-    document.getElementById("back-link").onclick = function(){ state.selectedEmployeeId=null; state.editing=false; render(); };
+    wireCalendarButtons(el);
+    document.getElementById("back-link").onclick = function(){ state.selectedEmployeeId=null; state.editing=false; state.selfEditing=false; render(); };
+    if (isOwnProfile){
+      document.getElementById("self-edit-toggle").onclick = function(){ state.selfEditing = !state.selfEditing; render(); };
+      if (selfEdit){
+        document.getElementById("self-save-btn").onclick = function(){
+          function sval(id){ var elx=document.getElementById(id); return elx?elx.value:""; }
+          var payload = {
+            mobile_phone: sval("se-mobile"), personal_email: sval("se-pemail"), address: sval("se-address"),
+            emergency_contact_name: sval("se-ecname"), emergency_contact_phone: sval("se-ecphone"),
+            updated_at: new Date().toISOString()
+          };
+          api("/rest/v1/employees?id=eq."+e.id, { method:"PATCH", headers:{ Prefer:"return=minimal" }, body: payload })
+            .then(function(){ state.selfEditing=false; loadAll(); })
+            .catch(function(err){ alert("Gagal menyimpan profil: " + err.message); });
+        };
+      }
+    }
     if (can("canEdit")){
       document.getElementById("edit-toggle").onclick = function(){ state.editing = !state.editing; render(); };
     }
@@ -1406,6 +1863,14 @@
           allowances: val("ed-tunj")?Number(val("ed-tunj")):null,
           updated_at: new Date().toISOString()
         };
+        // Salary fields don't render at all for roles without canViewSalary
+        // (see the Payroll section above) -- if we don't drop them here,
+        // val() silently returns "" for the missing inputs and the ternary
+        // above turns that into `null`, which would wipe the employee's
+        // salary to null on every single edit a non-admin makes to ANY
+        // other field. Omit the keys entirely instead so PATCH leaves them
+        // untouched, matching what the user actually saw and could edit.
+        if (!can("canViewSalary")){ delete payload.basic_salary; delete payload.allowances; }
         api("/rest/v1/employees?id=eq."+e.id, { method:"PATCH", headers:{ Prefer:"return=minimal" }, body: payload })
           .then(function(){ state.editing=false; loadAll(); })
           .catch(function(err){ alert("Gagal menyimpan: " + err.message); });
