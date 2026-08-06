@@ -6,8 +6,9 @@
 -- =========================================================
 
 alter table employees enable row level security;
-alter table employee_certifications enable row level security;
-alter table employee_competencies enable row level security;
+-- employee_certifications / employee_competencies: not created yet at this
+-- point in a fresh install (see the NOTE further down and in schema.sql) --
+-- batch1/batch2 enable RLS on them itself once they exist.
 alter table employee_family enable row level security;
 alter table employee_teaching_assignment enable row level security;
 alter table performance_reviews enable row level security;
@@ -39,10 +40,17 @@ end $$;
 
 -- ===== employee child tables + performance_reviews + employment_history =====
 -- select = admin/hrd_staff/pimpinan, insert/update = admin/hrd_staff, delete = admin
+-- NOTE: employee_certifications and employee_competencies are deliberately
+-- NOT in this list (same reasoning as employee_documents, which was never
+-- in it either): neither table exists yet at this point in a fresh install
+-- -- both are created by batch1/batch2 later, which also creates their own
+-- RLS policies. Including them here would either error (table doesn't
+-- exist yet) or, on a pre-existing database, create a policy that batch2
+-- then tries to create again under the same name and fails on the conflict.
 do $$
 declare t text;
 begin
-  foreach t in array array['employee_certifications','employee_competencies','employee_family','employee_teaching_assignment','performance_reviews','employment_history']
+  foreach t in array array['employee_family','employee_teaching_assignment','performance_reviews','employment_history']
   loop
     execute format('create policy "select all roles" on %I for select using ((select fn_current_role()) in (''admin'',''hrd_staff'',''pimpinan''))', t);
     execute format('create policy "insert admin+hrd" on %I for insert with check ((select fn_current_role()) in (''admin'',''hrd_staff''))', t);

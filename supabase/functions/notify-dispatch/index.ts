@@ -172,9 +172,10 @@ serve(async (req: Request) => {
 //    alter database postgres set app.notify_webhook_url =
 //      'https://<project-ref>.supabase.co/functions/v1/notify-dispatch';
 //    alter database postgres set app.notify_webhook_secret = '<the same random string from step 4>';
-//    (fn_dispatch_notification needs a small follow-up edit to send this
-//    secret as the x-dispatch-secret header -- see the TODO comment next
-//    to it in batch3_selfservice_notifications.sql.)
+//    (fn_dispatch_notification in batch3_selfservice_notifications.sql
+//    already reads app.notify_webhook_secret and sends it as the
+//    x-dispatch-secret header on every call -- no code changes needed
+//    here, just set both database settings above to matching values.)
 // 6. For push notifications: add the OneSignal Web SDK to index.html and,
 //    on successful subscription, PATCH the user's auth metadata with the
 //    player id so getUserContact() above can find it -- that wiring isn't
