@@ -171,31 +171,23 @@ create index if not exists idx_employees_status_perkawinan on employees(status_p
 -- EMPLOYEE CHILD TABLES (1-to-many)
 -- =========================================================
 
-create table if not exists employee_certifications (
-  id uuid primary key default gen_random_uuid(),
-  employee_id uuid not null references employees(id) on delete cascade,
-  certificate_name text not null,
-  certificate_number text,
-  issuer text,
-  issue_date date,
-  expiry_date date,
-  created_at timestamptz not null default now(),
-  created_by uuid,
-  deleted_at timestamptz
-);
-create index if not exists idx_certs_employee on employee_certifications(employee_id);
-
-create table if not exists employee_competencies (
-  id uuid primary key default gen_random_uuid(),
-  employee_id uuid not null references employees(id) on delete cascade,
-  skill_name text not null,
-  level text,
-  years_experience numeric(4,1),
-  created_at timestamptz not null default now(),
-  created_by uuid,
-  deleted_at timestamptz
-);
-create index if not exists idx_comp_employee on employee_competencies(employee_id);
+-- NOTE: employee_certifications and employee_competencies used to be defined
+-- here as flat tables (no document_id / competency_level_id FK, no audit
+-- trail). They have been removed for the same reason employee_documents was
+-- removed below: batch2_remaining_modules.sql defines a superseding, richer
+-- version of both (FK to employee_documents / competency_levels, audit
+-- trail). Leaving both definitions in place would make `create table if not
+-- exists` silently keep this old, flatter version active when batch2 runs
+-- afterward -- confirmed by actually running schema.sql then batch2 in order
+-- against Postgres: batch2's own CREATE INDEX on employee_certifications
+-- (document_id) fails with "column does not exist" because the old table
+-- from here was the one left standing. If you're setting this project up
+-- fresh, run schema.sql, then rls_policies.sql, then batch1, then batch2,
+-- and both tables will be created there instead, in their intended form.
+-- (MIGRATION_NOTES.md's "fresh install" guidance assumes this state; if
+-- you're applying this fix retroactively to a database created before it,
+-- follow MIGRATION_NOTES.md's "database created from a previous schema.sql"
+-- steps for these two tables as well as employee_documents.)
 
 create table if not exists employee_family (
   id uuid primary key default gen_random_uuid(),
