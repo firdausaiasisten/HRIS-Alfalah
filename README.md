@@ -4,66 +4,120 @@ Sistem Informasi Kepegawaian (HRIS) untuk **Pesantren Modern Al-Falah Abu Lam U*
 mengelola data induk pegawai, riwayat mutasi, dan penilaian kinerja, dengan
 dashboard ringkas untuk pimpinan.
 
+Frontend lama (satu file `app/index.html`, vanilla JS) sudah **digantikan
+sepenuhnya** oleh frontend React di repo ini. Backend/skema database
+Supabase **tidak berubah** — semua endpoint, RLS, dan business logic yang
+sudah berjalan di produksi tetap dipakai apa adanya.
+
 ## Struktur Repo
 
 ```
-app/
-  index.html        # Aplikasi utama (single-file HTML/JS, terhubung ke Supabase)
-  manifest.json      # PWA manifest
-  sw.js              # Service worker (PWA offline shell)
-database/
-  schema.sql                              # Skema inti + auth_user_id + notifications + leave_requests
-  rls_policies.sql                        # Row Level Security policies (role-based access)
-  batch1_family_education_documents.sql   # employee_family / employee_education / employee_documents
-  batch2_remaining_modules.sql            # contact, bank, payroll, cert, competency, training, language,
-                                           # leave balance, attendance, position/salary/transfer history,
-                                           # rewards, punishment
-  batch3_selfservice_notifications.sql    # self-service profile update + notifications triggers
-  batch4_institutional_calendar.sql       # institutional_events (kalender lembaga)
-  seed_dummy_data.sql                     # 10 pegawai contoh untuk uji coba
-  MIGRATION_NOTES.md                      # urutan eksekusi + catatan migrasi penting
-supabase/
-  functions/notify-dispatch/index.ts      # Edge Function: fan-out notifikasi ke email/push (opsional)
+src/            Frontend (React + Tailwind + Vite) -- lihat detail di bawah
+public/         Aset statis (ikon PWA, favicon)
+index.html      Entry point Vite
+database/       Skema Postgres/Supabase + urutan migrasi (lihat MIGRATION_NOTES.md)
+supabase/       Edge Function notify-dispatch (opsional, notifikasi email/push)
 ```
 
-> **Status saat ini**: seluruh file `database/*.sql` sudah dieksekusi dan
-> diverifikasi terhadap project Supabase produksi (`Data HRD Al-Falah`), termasuk
-> RLS, trigger, dan data contoh (13 pegawai total). Edge Function `notify-dispatch`
-> sudah ter-deploy tapi masih dorman (butuh secrets email/push milik Anda sendiri —
-> lihat `database/MIGRATION_NOTES.md`).
->
-> `app/index.html` memakai versi lengkap (kalender custom bulanan + integrasi
-> hari libur nasional + notifikasi realtime + self-service profile + PWA +
-> role-based UI + export iCal/Google Calendar). Realtime untuk tabel
-> `notifications` sudah diaktifkan di level database (`supabase_realtime`
-> publication) — sebelumnya tabel ini belum terdaftar sehingga listener
-> notifikasi live tidak akan pernah menerima event meski kodenya benar.
->
-> Catatan cakupan: UI saat ini fokus pada Dashboard, Biodata, Kalender, dan
-> Notifikasi. Modul-modul baru dari batch2 (`employee_contacts`,
-> `employee_bank_accounts`, `employee_payroll_components`,
-> `employee_trainings`, `employee_languages`, `employee_leave_balances`,
-> `employee_attendance_settings`, riwayat jabatan/gaji/mutasi, rewards,
-> punishment) **sudah ada dan berfungsi di database**, tapi belum punya
-> tampilan/form khusus di `app/index.html` — masih perlu dibangun form
-> UI-nya kalau ingin dikelola langsung dari aplikasi, bukan lewat Supabase
-> Table Editor.
+Root repo **adalah** proyek Vite (bukan monorepo dengan sub-folder frontend) —
+supaya Vercel bisa deploy langsung tanpa konfigurasi "Root Directory" khusus.
+`database/` dan `supabase/` tidak ikut proses build frontend; keduanya
+murni referensi untuk setup Supabase.
 
 ## Stack
 
-- **Frontend**: HTML + vanilla JavaScript (tanpa framework/build step) — cukup buka
-  `app/index.html` di browser, atau host sebagai static site (Vercel/Netlify/GitHub Pages).
-- **Backend**: [Supabase](https://supabase.com) — Postgres database, Auth, dan
-  auto-generated REST API (PostgREST). Semua akses data lewat `fetch()` langsung
-  ke REST API Supabase, diamankan dengan Row Level Security.
+- **Frontend**: React 19 + TailwindCSS 4 + Vite, routing dengan
+  `react-router-dom`, PWA lewat `vite-plugin-pwa`. Struktur Atomic Design
+  (`components/atoms|molecules|organisms`, `layouts/`, `pages/`, `lib/`
+  untuk logika murni yang testable, `context/` untuk auth).
+- **Backend**: [Supabase](https://supabase.com) — Postgres, Auth, dan
+  auto-generated REST API (PostgREST), diamankan dengan Row Level Security.
+  Frontend memanggil REST API langsung lewat `fetch()` (lihat
+  `src/lib/supabaseApi.js`).
 
-## Setup Database (Supabase)
+## Setup Lokal
 
-1. Buat project baru di [supabase.com](https://supabase.com) (Free tier cukup untuk mulai).
-2. Buka **SQL Editor**, jalankan `database/schema.sql`, lalu `database/rls_policies.sql`.
-3. Salin **Project URL** dan **anon/public API key** dari **Settings → API**.
-4. Buka `app/index.html`, ganti nilai `SUPABASE_URL` dan `ANON_KEY` di bagian atas `<script>`
-   sesuai project Anda.
+```bash
+npm install
+npm run dev       # server pengembangan, hot-reload di http://localhost:5173
+npm run build      # build produksi -> folder dist/
+npm run preview    # jalankan hasil build secara lokal untuk dicek
+npm test            # jalankan seluruh test (Vitest) -- 59 test, harus lolos semua
+npm run lint          # oxlint
+```
+
+### Konfigurasi Supabase (`.env.local`, opsional)
+
+Secara default `src/lib/supabaseApi.js` sudah berisi URL + anon key project
+Supabase yang berjalan (anon key memang didesain aman untuk terlihat
+publik — keamanan sesungguhnya ada di RLS, bukan menyembunyikan key ini).
+Untuk memakai project Supabase lain (mis. staging terpisah dari
+produksi), salin `.env.example` ke `.env.local` dan isi:
+
+```
+VITE_SUPABASE_URL=https://project-anda.supabase.co
+VITE_SUPABASE_ANON_KEY=anon-public-key-anda
+```
+
+## Setup Database (Supabase) — jika membuat project baru
+
+1. Buat project baru di [supabase.com](https://supabase.com).
+2. Buka **SQL Editor**, jalankan seluruh file di `database/` sesuai urutan
+   di `database/MIGRATION_NOTES.md`: `schema.sql` → `rls_policies.sql` →
+   `batch1` → `batch2` → `batch3` → `batch4` → `batch5` → opsional
+   `seed_dummy_data.sql`.
+3. Salin **Project URL** dan **anon/public API key** dari **Settings → API**
+   ke `.env.local` (lihat di atas).
+
+> **Catatan untuk project produksi yang sudah berjalan**
+> (`Data HRD Al-Falah`): migrasi sampai `batch4` sudah dieksekusi dan
+> diverifikasi. `batch5_notification_dedup_fix.sql` adalah perbaikan bug
+> dedup-notifikasi yang **masih perlu dijalankan manual** satu kali di SQL
+> Editor project produksi Anda — lihat `database/MIGRATION_NOTES.md` untuk
+> detail dan query verifikasi.
+
+## Deploy ke Vercel
+
+Repo ini sudah menyertakan `vercel.json` di root — build command, output
+directory, dan SPA rewrite (penting untuk `react-router-dom` `BrowserRouter`)
+sudah dikonfigurasi otomatis:
+
+```json
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
+```
+
+Langkah:
+
+1. Push repo ini ke GitHub (lihat bagian **Push ke GitHub** di bawah).
+2. Di [vercel.com](https://vercel.com), **Add New → Project**, import repo
+   ini. Vercel akan mendeteksi framework Vite secara otomatis dari
+   `vercel.json`/`package.json` — tidak perlu mengubah pengaturan build.
+3. **(Opsional tapi direkomendasikan)** di tab **Settings → Environment
+   Variables**, tambahkan `VITE_SUPABASE_URL` dan `VITE_SUPABASE_ANON_KEY`
+   kalau Anda ingin memisahkan environment (mis. Preview vs Production
+   menunjuk ke project Supabase berbeda). Tanpa ini, build tetap berhasil
+   memakai nilai default yang sudah ada di kode.
+4. Klik **Deploy**. Setelah selesai, buka domain `*.vercel.app` yang
+   diberikan — refresh di route seperti `/biodata/<id>` akan tetap
+   berfungsi (bukan 404) berkat baris `rewrites` di `vercel.json`.
+
+## Push ke GitHub
+
+Repo ini sudah diinisialisasi sebagai git repo lokal dengan commit awal.
+Untuk mengunggahnya:
+
+```bash
+git remote add origin https://github.com/<username-anda>/hris-alfalah.git
+git branch -M main
+git push -u origin main
+```
+
+(Ganti URL di atas dengan repo GitHub kosong yang sudah Anda buat.)
 
 ## Peran Pengguna (Role)
 
@@ -74,95 +128,59 @@ supabase/
 | `pimpinan` | Hanya melihat dashboard & biodata (read-only) |
 | `pending` | Akun baru mendaftar tapi belum diberi peran — tidak ada akses data |
 
-**Catatan penting**: pengguna **pertama** yang mendaftar (sign up) melalui aplikasi
-otomatis menjadi `admin` (lihat trigger `fn_handle_new_user` di `schema.sql`).
-Pengguna berikutnya berstatus `pending` sampai di-upgrade manual oleh admin lewat
-tabel `user_roles` (via Supabase Table Editor, atau menu admin jika sudah dibangun).
+Pengguna **pertama** yang mendaftar otomatis menjadi `admin` (trigger
+`fn_handle_new_user` di `database/schema.sql`). Pengguna berikutnya
+berstatus `pending` sampai di-upgrade manual lewat tabel `user_roles`.
 
-### Konfirmasi Email
+## Perbaikan bug pada sesi ini (dari draf `hris-react-fixed` sebelumnya)
 
-Secara default, Supabase Auth mewajibkan konfirmasi email saat mendaftar.
-Untuk kemudahan testing internal, ini bisa dinonaktifkan di
-**Authentication → Providers → Email → Confirm email** (matikan togglenya).
-Untuk produksi, disarankan tetap diaktifkan.
+Paket `hris-react-fixed` yang diberikan sebelumnya **tidak bisa langsung
+di-install/build/push** — beberapa berkas penting hilang atau rusak.
+Semua sudah diperbaiki di repo ini:
 
-## Menjalankan Secara Lokal
+| # | Masalah | Perbaikan |
+|---|---|---|
+| 1 | **`package.json` tidak ada sama sekali** di paket asli (hanya `package-lock.json`) — `npm install` akan langsung gagal. | Direkonstruksi dari dependensi persis di `package-lock.json`, dengan script (`dev`/`build`/`preview`/`test`/`lint`) sesuai yang didokumentasikan di README lama. |
+| 2 | `vitest.config.js` adalah file **kosong (0 byte)** — test tidak punya environment `jsdom`, `globals`, atau `setupFiles` (`test-setup.js` yang mengaktifkan `jest-dom` matcher tidak pernah dimuat). | Ditulis ulang dengan konfigurasi lengkap; 59 test tetap 100% lolos setelah perbaikan. |
+| 3 | Ada folder sampah literal bernama `src/{lib,context,components...}` — bekas `mkdir -p src/{a,b,c}/` yang dijalankan di shell tanpa brace-expansion, jadi membuat satu folder aneh alih-alih beberapa folder. | Dihapus. Tidak mempengaruhi kode (folder itu kosong/tidak direferensikan), tapi akan membingungkan dan mengotori repo di GitHub. |
+| 4 | **Sesi login tidak pernah disimpan** — `AuthContext` hanya menyimpan sesi di `useState`, jadi refresh halaman atau membuka tab baru langsung melempar pengguna ke halaman login meski token Supabase mereka sebenarnya masih berlaku (ini bug lama, sama-sama ada di versi vanilla JS maupun draf React sebelumnya, bukan regresi baru). | `AuthContext` sekarang menyimpan `refresh_token` di `localStorage` dan memakainya untuk memulihkan sesi otomatis saat aplikasi dibuka ulang (lewat endpoint resmi Supabase `grant_type=refresh_token`), dengan state `initializing` baru supaya route guard menunggu proses pemulihan alih-alih sempat "berkedip" redirect ke `/login`. |
+| 5 | Supabase URL & anon key hardcode langsung di source (`supabaseApi.js`) — bekerja, tapi tidak ideal untuk repo yang akan didorong ke GitHub/Vercel dan mungkin perlu env berbeda (staging vs produksi). | Dipindah untuk membaca `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` dari env Vite terlebih dahulu, dengan fallback ke nilai lama supaya tetap jalan tanpa setup tambahan. Ditambahkan `.env.example`. |
+| 6 | 1 warning oxlint (`no-useless-fallback-in-spread` di `supabaseApi.js`). | Diperbaiki (spread langsung tanpa fallback `\|\| {}` yang tidak perlu). |
 
-Karena aplikasi ini murni HTML/JS statis, cukup buka `app/index.html` langsung di
-browser, atau jalankan static server sederhana:
+Setelah semua perbaikan di atas: `npm install`, `npm test` (59/59 lolos),
+`npm run lint` (0 warning/error), dan `npm run build` semuanya berjalan
+bersih dari kondisi repo apa adanya.
 
-```bash
-cd app
-python3 -m http.server 8080
-# buka http://localhost:8080
-```
+## Keterbatasan yang jujur perlu diketahui (belum berubah dari draf sebelumnya)
 
-## Deploy ke Production (Domain Sendiri)
+Ini bukan "bug" dalam arti kode yang salah/rusak, melainkan cakupan fitur
+yang memang belum dibangun — dicatat di sini supaya tidak diklaim selesai:
 
-Untuk deploy ke domain publik (mis. `hris.alfalahabulamu.com`), unggah folder `app/`
-sebagai static site ke:
-
-- **Vercel** — `vercel deploy app/` atau hubungkan repo ini lewat dashboard Vercel
-- **Netlify** — drag-and-drop folder `app/`, atau hubungkan repo via Netlify dashboard
-- **GitHub Pages** — aktifkan Pages pada repo ini, arahkan ke folder `app/`
-
-Tidak perlu proses build — file `index.html` sudah siap pakai apa adanya.
+- Tab **Pendidikan / Dokumen / Kinerja / Cuti** di dalam halaman Profil
+  Pegawai masih menampilkan placeholder "Segera hadir di halaman ini".
+  Datanya sudah ada dan berfungsi penuh di database (`batch1`-`batch3`,
+  termasuk RLS berbasis role), tapi UI React untuk keempat tab itu belum
+  dibangun.
+- Realtime notifikasi (Supabase WebSocket) dan fetch hari libur dari GitHub
+  belum pernah diuji sebagai koneksi jaringan sungguhan dari browser di
+  lingkungan ini (hanya logikanya yang diuji lewat Vitest) — coba sekali
+  secara manual di browser nyata setelah deploy.
+- `xlsx` (SheetJS) di halaman Ekspor/Impor punya 2 celah keamanan lama
+  tanpa fix resmi di npm registry (`npm audit`). Rekomendasi: install dari
+  `https://cdn.sheetjs.com/xlsx-latest/xlsx-latest.tgz` (versi terpatch
+  resmi SheetJS) alih-alih dari npm registry.
+- **Notifikasi email/push** (`fn_dispatch_notification`, Edge Function
+  `notify-dispatch`) tetap dorman sampai Anda mengatur secrets sendiri
+  (`SENDGRID_API_KEY`, `ONESIGNAL_APP_ID`, dll.) — lihat
+  `database/MIGRATION_NOTES.md`.
 
 ## Keamanan
 
-- Semua tabel dilindungi Row Level Security (RLS) di level database — bukan hanya
-  di frontend — sehingga aturan akses tetap berlaku meski API key diketahui pihak lain.
-- Password di-hash otomatis oleh Supabase Auth (GoTrue), tidak pernah disimpan
-  sebagai teks biasa.
-- Data sensitif (gaji, NIK, BPJS) hanya bisa diakses oleh role yang berwenang
-  sesuai kebijakan RLS di `rls_policies.sql`.
-
-## Roadmap Modularisasi `employees`
-
-Tabel inti `employees` sudah dipecah menjadi modul-modul anak yang
-ternormalisasi (3NF). **Seluruh 19 modul di roadmap awal sudah selesai
-dieksekusi ke database produksi.**
-
-| # | Modul | Status |
-|---|---|---|
-| 1 | `employee_family` (→ `employee_family_members`) | ✅ Selesai — batch1 |
-| 2 | `employee_education` | ✅ Selesai — batch1 |
-| 3 | `employee_documents` | ✅ Selesai (dirombak total) — batch1 |
-| 4 | `employee_contact` (→ `employee_contacts`) | ✅ Selesai — batch2 |
-| 5 | `employee_bank` (→ `employee_bank_accounts`) | ✅ Selesai — batch2 |
-| 6 | `employee_payroll` (→ `employee_payroll_components`) | ✅ Selesai (admin-only) — batch2 |
-| 7 | `employee_certifications` | ✅ Disempurnakan (FK + audit trail) — batch2 |
-| 8 | `employee_competencies` | ✅ Disempurnakan (FK + audit trail) — batch2 |
-| 9 | `employee_training` (→ `employee_trainings`) | ✅ Selesai — batch2 |
-| 10 | `employee_language` (→ `employee_languages`) | ✅ Selesai — batch2 |
-| 11 | `employee_leave` (→ `employee_leave_balances` + `leave_requests`) | ✅ Selesai — batch2/schema |
-| 12 | `employee_attendance_setting` | ✅ Selesai — batch2 |
-| 13 | `employee_position_history` | ✅ Selesai — batch2 |
-| 14 | `employee_salary_history` | ✅ Selesai (admin-only) — batch2 |
-| 15 | `employee_transfer_history` | ✅ Selesai — batch2 |
-| 16 | `employee_performance` | ✅ Sudah ada sebagai `performance_reviews` |
-| 17 | `employee_rewards` | ✅ Selesai — batch2 |
-| 18 | `employee_punishment` | ✅ Selesai (admin-only) — batch2 |
-| 19 | `employee_system_account` | ✅ Sudah ada sebagai `user_roles` + `employees.auth_user_id` |
-
-**Fitur tambahan di luar 19 modul awal** (batch3 & batch4):
-- Self-service: pegawai bisa mengedit sebagian data kontaknya sendiri (`fn_restrict_self_update` membatasi kolom apa saja yang boleh diubah)
-- Notifikasi in-app (`notifications`) + hook ke email/push lewat Edge Function (opsional, perlu API key sendiri)
-- Pengecekan kontrak akan berakhir otomatis via `pg_cron` (harian, jam 06:00)
-- Kalender kegiatan lembaga (`institutional_events`)
-
-Setiap modul menggunakan infrastruktur generik dari `batch1_family_education_documents.sql`:
-- `fn_set_updated_at()` — trigger `BEFORE UPDATE` agar `updated_at` selalu akurat
-- `fn_hris_audit()` — trigger `AFTER INSERT/UPDATE/DELETE` yang mencatat setiap perubahan ke tabel `audit_log`
-
-Lihat `database/MIGRATION_NOTES.md` untuk urutan eksekusi dan catatan migrasi penting.
-
-## Struktur Data Utama
-
-- `employees` — data induk pegawai (single source of truth)
-- `employee_certifications`, `employee_competencies`, `employee_family`,
-  `employee_documents`, `employee_teaching_assignment` — data pendukung 1-ke-banyak
-- `performance_reviews` — riwayat penilaian kinerja per periode (skor & predikat
-  dihitung otomatis lewat trigger database)
-- `employment_history` — riwayat mutasi/promosi/perubahan gaji (tidak pernah ditimpa)
-- `m_*` — tabel master/lookup (unit kerja, jabatan, bank, dll.)
+- Semua tabel dilindungi Row Level Security (RLS) di level database —
+  aturan akses tetap berlaku meski anon API key diketahui pihak lain.
+- Password di-hash otomatis oleh Supabase Auth (GoTrue).
+- Data sensitif (gaji, NIK, BPJS) hanya bisa diakses oleh role yang
+  berwenang sesuai kebijakan di `database/rls_policies.sql`.
+- Yang disimpan di `localStorage` browser hanyalah *refresh token* (untuk
+  memulihkan sesi) — bukan password, dan sama persis dengan yang disimpan
+  SDK resmi `@supabase/supabase-js` secara default.

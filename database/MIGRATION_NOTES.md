@@ -1,10 +1,60 @@
 # Catatan Migrasi
 
+## Perbaikan terbaru: `schema.sql` benar-benar tidak lagi mendefinisikan `employee_certifications`/`employee_competencies`
+
+Catatan di bawah ini ("Untuk instalasi baru") **sudah lama menyatakan**
+bahwa `schema.sql` tidak lagi mendefinisikan kedua tabel itu — tapi
+sebelumnya klaim itu **tidak sesuai dengan isi file yang sebenarnya**:
+`schema.sql` masih memuat definisi lama (flat, tanpa `document_id`/
+`competency_level_id`), jadi menjalankan urutan resmi (`schema.sql` →
+`rls_policies.sql` → `batch1` → `batch2`) pada database yang benar-benar
+kosong tetap kena bug collision "diam-diam" yang dijelaskan di bagian
+"⚠️ Untuk database yang dibuat dari schema.sql versi SEBELUMNYA" — padahal
+seharusnya bug itu hanya menimpa database lama, bukan instalasi fresh.
+Ini dikonfirmasi dengan menjalankan seluruh rantai migrasi dari database
+kosong: `batch2` gagal persis di `CREATE INDEX ... (document_id)` karena
+tabel lama dari `schema.sql` yang menang. `schema.sql` dan
+`rls_policies.sql` sudah diperbaiki (definisi lama dihapus dari
+`schema.sql`, referensi ke kedua tabel itu dihapus dari loop RLS awal di
+`rls_policies.sql`) — sudah diverifikasi ulang: rantai migrasi lengkap dari
+database kosong sekarang berjalan tanpa error sampai `seed_dummy_data.sql`.
+
+Catatan untuk project Supabase produksi (`Data HRD Al-Falah`) yang sudah
+ada: karena `batch2_remaining_modules.sql` sebelumnya sudah berhasil
+dijalankan di sana (per catatan status di README.md), kemungkinan besar
+tabel produksi **sudah** dalam bentuk yang benar (dari batch2, bukan dari
+definisi lama `schema.sql`) — jalankan query verifikasi di bawah ini kalau
+ingin memastikan, tidak perlu mengulang migrasi kalau kolomnya sudah ada:
+
+```sql
+select column_name from information_schema.columns
+where table_name = 'employee_certifications' and column_name = 'document_id';
+select column_name from information_schema.columns
+where table_name = 'employee_competencies' and column_name = 'competency_level_id';
+```
+
+Kalau kedua query itu mengembalikan baris, database produksi sudah aman
+dan perbaikan `schema.sql`/`rls_policies.sql` ini hanya relevan untuk
+instalasi fresh berikutnya (bukan untuk dijalankan ulang di produksi).
+
 ## Untuk instalasi baru (fresh database)
 
 Jalankan berurutan: `schema.sql` → `rls_policies.sql` → `batch1_family_education_documents.sql`
 → `batch2_remaining_modules.sql` → `batch3_selfservice_notifications.sql` →
-`batch4_institutional_calendar.sql` → (opsional) `seed_dummy_data.sql`.
+`batch4_institutional_calendar.sql` → `batch5_notification_dedup_fix.sql` →
+(opsional) `seed_dummy_data.sql`.
+
+`batch5_notification_dedup_fix.sql` memperbaiki bug pada
+`fn_check_expiring_contracts()`: guard anti-duplikat notifikasi tim
+sebelumnya mencocokkan `message like '%'||full_name||'%'`, yang bisa salah
+match kalau ada dua pegawai dengan nama yang satu adalah substring dari
+yang lain (mis. "Budi" dan "Budi Santoso") — notifikasi pegawai kedua bisa
+gagal terkirim karena dianggap sudah pernah dikirim. Batch ini menambah
+kolom `notifications.employee_id` dan mengganti guard-nya memakai kolom
+itu (dikonfirmasi lewat pengujian nyata: dua pegawai bernama tumpang
+tindih substring, keduanya sekarang benar-benar dapat notifikasi
+terpisah, dan menjalankan fungsi dua kali di hari yang sama tidak
+menduplikasi).
 
 `schema.sql` versi ini **sudah termasuk** `employees.auth_user_id`, tabel
 `notifications`, dan tabel `leave_requests` sejak awal — jadi `batch2` dan

@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+/* ==========================================================
+   Design tokens dari brief desain (Fitur redesign Profil Pegawai)
+   Dipakai global untuk seluruh app, bukan cuma halaman Profil,
+   supaya konsisten dengan semangat "design system" yang diminta.
+   ========================================================== */
+@theme {
+  --color-brand-primary: #0F766E;      /* Emerald Green */
+  --color-brand-primary-hover: #0d6a63;
+  --color-brand-secondary: #64748B;    /* Slate Gray */
+  --color-app-bg: #F8FAFC;
+  --color-app-card: #FFFFFF;
+  --color-app-border: #E5E7EB;
+
+  --radius-app: 12px;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Philosopher", ui-serif, serif; /* dipertahankan dari brand asli */
+
+  /* Status chip colors (brief bagian 7: "Status Badges") */
+  --color-status-active-bg: #DCFCE7;
+  --color-status-active-fg: #15803D;
+  --color-status-contract-bg: #FFEDD5;
+  --color-status-contract-fg: #C2410C;
+  --color-status-inactive-bg: #FEE2E2;
+  --color-status-inactive-fg: #B91C1C;
+  --color-status-permanent-bg: #DBEAFE;
+  --color-status-permanent-fg: #1D4ED8;
+  --color-status-internship-bg: #F3E8FF;
+  --color-status-internship-fg: #7E22CE;
+}
+
+/* Dark mode: sama seperti aplikasi vanilla JS sebelumnya, class-based
+   supaya bisa di-toggle lewat JS (bukan cuma ikut preferensi OS). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+html, body, #root { height: 100%; }
+body { font-family: var(--font-sans); background: var(--color-app-bg); }
+
+/* Fokus yang jelas terlihat untuk keyboard nav (WCAG AA -- brief bagian 13) */
+:focus-visible {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+}
