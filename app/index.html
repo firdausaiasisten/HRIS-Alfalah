@@ -521,7 +521,11 @@
     teaching: [], history: [],
     chartInstances: {},
     calendarYear: null, calendarMonth: null, selfEditing: false,
-    realtimeChannel: null, realtimeClient: null
+    realtimeChannel: null, realtimeClient: null,
+    // batch2 module records (employee_contacts, employee_bank_accounts, ...),
+    // keyed by employee id then module key -- fetched lazily per employee
+    // (13 extra tables x every employee would be wasteful on the main list).
+    childRecords: {}, childFormOpen: null, _loadingChild: {}
   };
 
   /* ================================================================
@@ -751,10 +755,17 @@
       api("/rest/v1/m_agama?select=*"),
       api("/rest/v1/m_status_perkawinan?select=*"),
       api("/rest/v1/employee_teaching_assignment?select=*"),
-      api("/rest/v1/employment_history?select=*&order=effective_date.desc")
+      api("/rest/v1/employment_history?select=*&order=effective_date.desc"),
+      api("/rest/v1/competency_levels?select=*&order=rank.asc").catch(function(){ return []; }),
+      api("/rest/v1/languages?select=*&order=name.asc").catch(function(){ return []; }),
+      api("/rest/v1/shift_types?select=*&order=name.asc").catch(function(){ return []; }),
+      api("/rest/v1/payroll_component_types?select=*&order=name.asc").catch(function(){ return []; })
     ]).then(function(r){
       state.employees = r[0] || []; state.reviews = r[1] || [];
-      state.masters = { unit:r[2]||[], dept:r[3]||[], jabatan:r[4]||[], statusKp:r[5]||[], jenisKp:r[6]||[], bank:r[7]||[], agama:r[8]||[], kawin:r[9]||[] };
+      state.masters = {
+        unit:r[2]||[], dept:r[3]||[], jabatan:r[4]||[], statusKp:r[5]||[], jenisKp:r[6]||[], bank:r[7]||[], agama:r[8]||[], kawin:r[9]||[],
+        competencyLevels:r[12]||[], languages:r[13]||[], shiftTypes:r[14]||[], payrollComponentTypes:r[15]||[]
+      };
       state.teaching = r[10]||[]; state.history = r[11]||[];
       state.loading = false; render();
     }).catch(function(e){ state.loading=false; state.errorMsg = "Gagal memuat data: " + e.message; render(); });
@@ -1718,6 +1729,331 @@
     }).join('');
   }
 
+  /* ================================================================
+     BATCH 2 CHILD MODULES (employee_contacts, employee_bank_accounts, ...)
+     Generic config-driven CRUD so 13 near-identical tables don't need
+     13 near-identical hand-written render/save/delete blocks. Each module
+     maps 1:1 to a real table + its RLS policy shape (documented per module
+     below, matching database/batch2_remaining_modules.sql exactly).
+     ================================================================ */
+  var MASTER_LABEL_FIELD = {
+    bank:'nama', unit:'nama', dept:'nama', jabatan:'nama', statusKp:'nama', jenisKp:'nama', agama:'nama', kawin:'nama',
+    competencyLevels:'name', languages:'name', shiftTypes:'name', payrollComponentTypes:'name'
+  };
+  function masterLabel(masterKey, id){
+    if (!id) return "-";
+    var list = state.masters[masterKey] || [];
+    var found = list.find(function(x){ return x.id === id; });
+    if (!found) return "-";
+    var lf = MASTER_LABEL_FIELD[masterKey] || 'nama';
+    return found[lf] || found.nama || found.name || "-";
+  }
+
+  var CHILD_MODULES = [
+    { key:'contacts', table:'employee_contacts', title:'📞 Kontak Tambahan', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'contact_type', label:'Jenis', fmt:function(v){ return {home:'Rumah',work:'Kerja',emergency:'Darurat',other:'Lainnya'}[v]||v; } },
+        { k:'full_name', label:'Nama' }, { k:'phone', label:'Telepon' }, { k:'email', label:'Email' },
+        { k:'is_primary', label:'Utama', fmt:function(v){ return v?'Ya':'-'; } }
+      ],
+      fields:[
+        { k:'contact_type', label:'Jenis', type:'select', required:true, options:[['home','Rumah'],['work','Kerja'],['emergency','Darurat'],['other','Lainnya']] },
+        { k:'full_name', label:'Nama', type:'text' }, { k:'relationship', label:'Hubungan', type:'text' },
+        { k:'phone', label:'Telepon', type:'text' }, { k:'email', label:'Email', type:'text' }, { k:'address', label:'Alamat', type:'text' },
+        { k:'is_primary', label:'Jadikan Utama', type:'checkbox' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    { key:'bankAccounts', table:'employee_bank_accounts', title:'🏦 Rekening Bank', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'bank_id', label:'Bank', fmt:function(v){ return masterLabel('bank', v); } },
+        { k:'account_number', label:'No. Rekening' }, { k:'account_holder_name', label:'Atas Nama' },
+        { k:'is_primary', label:'Utama', fmt:function(v){ return v?'Ya':'-'; } }
+      ],
+      fields:[
+        { k:'bank_id', label:'Bank', type:'select-master', master:'bank', required:true },
+        { k:'account_number', label:'No. Rekening', type:'text', required:true },
+        { k:'account_holder_name', label:'Atas Nama', type:'text', required:true },
+        { k:'branch', label:'Cabang', type:'text' }, { k:'is_primary', label:'Jadikan Utama', type:'checkbox' }
+      ]
+    },
+    // admin-only end to end (RLS: select/insert/update/delete all admin-only)
+    { key:'payrollComponents', table:'employee_payroll_components', title:'💰 Komponen Payroll', editPerm:'canViewSalary', viewPerm:'canViewSalary', deletable:true,
+      listCols:[
+        { k:'component_type_id', label:'Komponen', fmt:function(v){ return masterLabel('payrollComponentTypes', v); } },
+        { k:'amount', label:'Jumlah', fmt:function(v){ return fmtMoney(v); } },
+        { k:'effective_from', label:'Berlaku Sejak', fmt:function(v){ return fmtDate(v); } }
+      ],
+      fields:[
+        { k:'component_type_id', label:'Komponen', type:'select-master', master:'payrollComponentTypes', required:true },
+        { k:'amount', label:'Jumlah (Rp)', type:'number', required:true },
+        { k:'effective_from', label:'Berlaku Sejak', type:'date', required:true },
+        { k:'effective_to', label:'Berlaku Sampai', type:'date' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    { key:'certifications', table:'employee_certifications', title:'📜 Sertifikasi', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'certificate_name', label:'Nama Sertifikat' }, { k:'issuer', label:'Penerbit' },
+        { k:'issue_date', label:'Terbit', fmt:function(v){ return fmtDate(v); } }, { k:'expiry_date', label:'Berakhir', fmt:function(v){ return fmtDate(v); } }
+      ],
+      fields:[
+        { k:'certificate_name', label:'Nama Sertifikat', type:'text', required:true }, { k:'certificate_number', label:'Nomor', type:'text' },
+        { k:'issuer', label:'Penerbit', type:'text' }, { k:'issue_date', label:'Tanggal Terbit', type:'date' },
+        { k:'expiry_date', label:'Tanggal Berakhir', type:'date' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    { key:'competencies', table:'employee_competencies', title:'🧠 Kompetensi', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'skill_name', label:'Kompetensi' }, { k:'competency_level_id', label:'Level', fmt:function(v){ return masterLabel('competencyLevels', v); } },
+        { k:'years_experience', label:'Pengalaman (thn)' }
+      ],
+      fields:[
+        { k:'skill_name', label:'Nama Kompetensi', type:'text', required:true },
+        { k:'competency_level_id', label:'Level', type:'select-master', master:'competencyLevels' },
+        { k:'years_experience', label:'Lama Pengalaman (tahun)', type:'number' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    { key:'trainings', table:'employee_trainings', title:'🎓 Pelatihan', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'training_name', label:'Nama Pelatihan' }, { k:'training_type', label:'Jenis' },
+        { k:'provider', label:'Penyelenggara' }, { k:'result', label:'Hasil' }
+      ],
+      fields:[
+        { k:'training_name', label:'Nama Pelatihan', type:'text', required:true }, { k:'provider', label:'Penyelenggara', type:'text' },
+        { k:'training_type', label:'Jenis', type:'select', options:[['Internal','Internal'],['Eksternal','Eksternal'],['Daring','Daring'],['Sertifikasi','Sertifikasi']] },
+        { k:'start_date', label:'Tanggal Mulai', type:'date' }, { k:'end_date', label:'Tanggal Selesai', type:'date' },
+        { k:'duration_hours', label:'Durasi (jam)', type:'number' }, { k:'result', label:'Hasil', type:'text' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    { key:'languages', table:'employee_languages', title:'🗣️ Bahasa', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'language_id', label:'Bahasa', fmt:function(v){ return masterLabel('languages', v); } },
+        { k:'proficiency_level_id', label:'Level', fmt:function(v){ return masterLabel('competencyLevels', v); } }
+      ],
+      fields:[
+        { k:'language_id', label:'Bahasa', type:'select-master', master:'languages', required:true },
+        { k:'proficiency_level_id', label:'Tingkat Kemahiran', type:'select-master', master:'competencyLevels' },
+        { k:'can_speak', label:'Bisa Bicara', type:'checkbox', default:true },
+        { k:'can_read', label:'Bisa Membaca', type:'checkbox', default:true },
+        { k:'can_write', label:'Bisa Menulis', type:'checkbox', default:true }
+      ]
+    },
+    { key:'leaveBalances', table:'employee_leave_balances', title:'🏖️ Kuota Cuti', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'leave_type', label:'Jenis Cuti' }, { k:'year', label:'Tahun' },
+        { k:'entitled_days', label:'Hak (hari)' }, { k:'carried_over_days', label:'Carry Over' }
+      ],
+      fields:[
+        { k:'leave_type', label:'Jenis Cuti', type:'select', required:true,
+          options:[['Cuti Tahunan','Cuti Tahunan'],['Cuti Sakit','Cuti Sakit'],['Cuti Melahirkan','Cuti Melahirkan'],['Izin Khusus','Izin Khusus'],['Cuti Lainnya','Cuti Lainnya']] },
+        { k:'year', label:'Tahun', type:'number', required:true, default:new Date().getFullYear() },
+        { k:'entitled_days', label:'Hak Cuti (hari)', type:'number', required:true },
+        { k:'carried_over_days', label:'Carry Over (hari)', type:'number' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    { key:'attendanceSettings', table:'employee_attendance_settings', title:'🕒 Pengaturan Absensi', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'shift_type_id', label:'Shift', fmt:function(v){ return masterLabel('shiftTypes', v); } },
+        { k:'effective_from', label:'Berlaku Sejak', fmt:function(v){ return fmtDate(v); } }, { k:'effective_to', label:'Sampai', fmt:function(v){ return fmtDate(v); } }
+      ],
+      fields:[
+        { k:'shift_type_id', label:'Shift', type:'select-master', master:'shiftTypes', required:true },
+        { k:'effective_from', label:'Berlaku Sejak', type:'date', required:true },
+        { k:'effective_to', label:'Berlaku Sampai', type:'date' }, { k:'notes', label:'Catatan', type:'text' }
+      ]
+    },
+    // append-only: RLS only defines select+insert (no update/delete policy at all,
+    // by design -- see MIGRATION_NOTES.md / batch2 comments on historical data)
+    { key:'positionHistory', table:'employee_position_history', title:'📈 Riwayat Jabatan', editPerm:'canEdit', deletable:false, appendOnly:true,
+      listCols:[
+        { k:'jabatan_id', label:'Jabatan', fmt:function(v){ return masterLabel('jabatan', v); } }, { k:'grade', label:'Golongan' },
+        { k:'effective_date', label:'Tanggal', fmt:function(v){ return fmtDate(v); } }, { k:'reason', label:'Alasan' }
+      ],
+      fields:[
+        { k:'jabatan_id', label:'Jabatan Baru', type:'select-master', master:'jabatan', required:true },
+        { k:'grade', label:'Golongan', type:'text' }, { k:'rank', label:'Pangkat', type:'text' },
+        { k:'effective_date', label:'Tanggal Berlaku', type:'date', required:true },
+        { k:'decree_number', label:'Nomor SK', type:'text' }, { k:'reason', label:'Alasan', type:'text' }
+      ]
+    },
+    { key:'salaryHistory', table:'employee_salary_history', title:'💵 Riwayat Gaji', editPerm:'canViewSalary', viewPerm:'canViewSalary', deletable:false, appendOnly:true,
+      listCols:[
+        { k:'basic_salary_before', label:'Sebelum', fmt:function(v){ return fmtMoney(v); } }, { k:'basic_salary_after', label:'Sesudah', fmt:function(v){ return fmtMoney(v); } },
+        { k:'effective_date', label:'Tanggal', fmt:function(v){ return fmtDate(v); } }
+      ],
+      fields:[
+        { k:'basic_salary_before', label:'Gaji Sebelum (Rp)', type:'number' }, { k:'basic_salary_after', label:'Gaji Sesudah (Rp)', type:'number', required:true },
+        { k:'allowances_before', label:'Tunjangan Sebelum (Rp)', type:'number' }, { k:'allowances_after', label:'Tunjangan Sesudah (Rp)', type:'number' },
+        { k:'effective_date', label:'Tanggal Berlaku', type:'date', required:true },
+        { k:'decree_number', label:'Nomor SK', type:'text' }, { k:'reason', label:'Alasan', type:'text' }
+      ]
+    },
+    { key:'transferHistory', table:'employee_transfer_history', title:'🔄 Riwayat Mutasi', editPerm:'canEdit', deletable:false, appendOnly:true,
+      listCols:[
+        { k:'unit_kerja_baru_id', label:'Unit Baru', fmt:function(v){ return masterLabel('unit', v); } },
+        { k:'effective_date', label:'Tanggal', fmt:function(v){ return fmtDate(v); } }, { k:'reason', label:'Alasan' }
+      ],
+      fields:[
+        { k:'unit_kerja_lama_id', label:'Unit Lama', type:'select-master', master:'unit' },
+        { k:'unit_kerja_baru_id', label:'Unit Baru', type:'select-master', master:'unit', required:true },
+        { k:'departemen_lama_id', label:'Departemen Lama', type:'select-master', master:'dept' },
+        { k:'departemen_baru_id', label:'Departemen Baru', type:'select-master', master:'dept' },
+        { k:'effective_date', label:'Tanggal Berlaku', type:'date', required:true },
+        { k:'decree_number', label:'Nomor SK', type:'text' }, { k:'reason', label:'Alasan', type:'text' }
+      ]
+    },
+    { key:'rewards', table:'employee_rewards', title:'🏅 Penghargaan', editPerm:'canEdit', deletable:true,
+      listCols:[
+        { k:'reward_name', label:'Nama' }, { k:'category', label:'Kategori' },
+        { k:'reward_date', label:'Tanggal', fmt:function(v){ return fmtDate(v); } }, { k:'given_by', label:'Diberikan Oleh' }
+      ],
+      fields:[
+        { k:'reward_name', label:'Nama Penghargaan', type:'text', required:true },
+        { k:'category', label:'Kategori', type:'select', options:[['Penghargaan','Penghargaan'],['Insentif','Insentif'],['Promosi Prestasi','Promosi Prestasi'],['Lainnya','Lainnya']] },
+        { k:'reward_date', label:'Tanggal', type:'date', required:true }, { k:'given_by', label:'Diberikan Oleh', type:'text' },
+        { k:'decree_number', label:'Nomor SK', type:'text' }, { k:'description', label:'Deskripsi', type:'text' }
+      ]
+    },
+    // admin-only end to end (RLS: select/insert/update/delete all admin-only)
+    { key:'punishment', table:'employee_punishment', title:'⚠️ Sanksi / Pelanggaran', editPerm:'canViewDisciplinary', viewPerm:'canViewDisciplinary', deletable:true,
+      listCols:[
+        { k:'violation_type', label:'Jenis' }, { k:'severity', label:'Tingkat' },
+        { k:'violation_date', label:'Tanggal', fmt:function(v){ return fmtDate(v); } }, { k:'is_resolved', label:'Selesai', fmt:function(v){ return v?'Ya':'Belum'; } }
+      ],
+      fields:[
+        { k:'violation_type', label:'Jenis Pelanggaran', type:'text', required:true },
+        { k:'severity', label:'Tingkat', type:'select', required:true, options:[['Ringan','Ringan'],['Sedang','Sedang'],['Berat','Berat']] },
+        { k:'violation_date', label:'Tanggal', type:'date', required:true }, { k:'description', label:'Deskripsi', type:'text' },
+        { k:'action_taken', label:'Tindakan', type:'text' }, { k:'decree_number', label:'Nomor SK', type:'text' },
+        { k:'is_resolved', label:'Sudah Selesai', type:'checkbox' }
+      ]
+    }
+  ];
+
+  function loadChildRecords(employeeId){
+    var reqs = CHILD_MODULES.map(function(m){
+      var url = "/rest/v1/" + m.table + "?select=*&employee_id=eq." + employeeId;
+      if (!m.appendOnly) url += "&deleted_at=is.null";
+      url += "&order=created_at.desc";
+      return api(url).catch(function(){ return []; });
+    });
+    return Promise.all(reqs).then(function(results){
+      var data = {};
+      CHILD_MODULES.forEach(function(m, i){ data[m.key] = results[i] || []; });
+      state.childRecords[employeeId] = data;
+    });
+  }
+
+  function renderChildField(moduleKey, f){
+    var id = 'cf-' + moduleKey + '-' + f.k;
+    if (f.type === 'checkbox'){
+      return '<div class="field" style="display:flex;align-items:center;gap:6px;padding-top:18px;"><input type="checkbox" id="' + id + '" style="width:auto;" ' + (f.default?'checked':'') + ' /><label style="margin:0;">' + escHtml(f.label) + '</label></div>';
+    }
+    var label = '<label>' + escHtml(f.label) + (f.required?' *':'') + '</label>';
+    var input;
+    if (f.type === 'select'){
+      input = '<select id="' + id + '"><option value="">-</option>' + f.options.map(function(o){ return '<option value="' + escHtml(o[0]) + '">' + escHtml(o[1]) + '</option>'; }).join('') + '</select>';
+    } else if (f.type === 'select-master'){
+      var lf = MASTER_LABEL_FIELD[f.master] || 'nama';
+      input = '<select id="' + id + '">' + opts(state.masters[f.master] || [], 'id', lf, null) + '</select>';
+    } else {
+      input = '<input id="' + id + '" type="' + (f.type||'text') + '" ' + (f.default!==undefined ? ('value="' + escHtml(String(f.default)) + '"') : '') + ' />';
+    }
+    return '<div class="field">' + label + input + '</div>';
+  }
+
+  function renderChildModulesHTML(e){
+    var data = state.childRecords[e.id];
+    if (!data){
+      if (!state._loadingChild[e.id]){
+        state._loadingChild[e.id] = true;
+        loadChildRecords(e.id).then(function(){ state._loadingChild[e.id] = false; render(); });
+      }
+      return '<div class="section-title">Data Tambahan</div><p style="color:var(--muted);font-size:13px;">⏳ Memuat data tambahan...</p>';
+    }
+    var out = '';
+    CHILD_MODULES.forEach(function(m){
+      if (m.viewPerm && !can(m.viewPerm)) return; // e.g. payroll/salary/punishment: hidden entirely, not just uneditable
+      var rows = data[m.key] || [];
+      var editable = can(m.editPerm);
+      var showAddForm = state.childFormOpen === m.key;
+      out += '<div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">' + escHtml(m.title) +
+        (editable ? '<button class="btn btn-sm" data-childtoggle="' + m.key + '">' + (showAddForm?'✕ Batal':'+ Tambah') + '</button>' : '') +
+      '</div>';
+      if (rows.length === 0){
+        out += '<p style="color:var(--muted);font-size:13px;">Belum ada data.</p>';
+      } else {
+        out += '<div class="table-wrap"><table><tr>' + m.listCols.map(function(c){ return '<th>' + escHtml(c.label) + '</th>'; }).join('') +
+          ((editable && !m.appendOnly) ? '<th></th>' : '') + '</tr>' +
+          rows.map(function(r){
+            return '<tr>' + m.listCols.map(function(c){
+              var v = r[c.k];
+              var display = c.fmt ? c.fmt(v) : (v===null||v===undefined||v===""?"-":String(v));
+              return '<td>' + escHtml(String(display===null||display===undefined?"-":display)) + '</td>';
+            }).join('') +
+            ((editable && !m.appendOnly && state.role==='admin') ? '<td><span class="link" data-childdelete="' + m.key + '|' + r.id + '" style="color:#c0392b;">Hapus</span></td>' : ((editable && !m.appendOnly) ? '<td></td>' : '')) +
+            '</tr>';
+          }).join('') +
+        '</table></div>';
+      }
+      if (showAddForm){
+        out += '<div class="card" style="background:var(--surface-2,#f8f9fa);margin-top:6px;margin-bottom:14px;"><div class="grid grid-2">' +
+          m.fields.map(function(f){ return renderChildField(m.key, f); }).join('') +
+          '</div><button class="btn btn-primary btn-sm" data-childsave="' + m.key + '">💾 Simpan</button></div>';
+      }
+    });
+    return out;
+  }
+
+  function wireChildModuleEvents(el, e){
+    Array.prototype.forEach.call(el.querySelectorAll('[data-childtoggle]'), function(btn){
+      btn.onclick = function(){
+        var key = btn.getAttribute('data-childtoggle');
+        state.childFormOpen = (state.childFormOpen === key) ? null : key;
+        render();
+      };
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('[data-childsave]'), function(btn){
+      btn.onclick = function(){
+        var key = btn.getAttribute('data-childsave');
+        var mod = CHILD_MODULES.find(function(m){ return m.key === key; });
+        var payload = { employee_id: e.id };
+        var valid = true;
+        mod.fields.forEach(function(f){
+          var elx = document.getElementById('cf-' + key + '-' + f.k);
+          if (!elx) return;
+          var v;
+          if (f.type === 'checkbox'){ v = elx.checked; }
+          else if (f.type === 'number'){ v = elx.value === '' ? null : Number(elx.value); }
+          else { v = elx.value === '' ? null : elx.value; }
+          if (f.required && (v===null || v==="")){ valid = false; }
+          payload[f.k] = v;
+        });
+        if (!valid){ alert('Mohon lengkapi field yang wajib diisi (*)'); return; }
+        api('/rest/v1/' + mod.table, { method:'POST', headers:{ Prefer:'return=minimal' }, body: payload })
+          .then(function(){
+            state.childFormOpen = null;
+            delete state.childRecords[e.id];
+            render();
+          })
+          .catch(function(err){ alert('Gagal menyimpan: ' + err.message); });
+      };
+    });
+    Array.prototype.forEach.call(el.querySelectorAll('[data-childdelete]'), function(link){
+      link.onclick = function(){
+        var parts = link.getAttribute('data-childdelete').split('|');
+        var key = parts[0], id = parts[1];
+        var mod = CHILD_MODULES.find(function(m){ return m.key === key; });
+        if (!confirm('Hapus data ini?')) return;
+        api('/rest/v1/' + mod.table + '?id=eq.' + id, { method:'DELETE', headers:{ Prefer:'return=minimal' } })
+          .then(function(){
+            delete state.childRecords[e.id];
+            render();
+          })
+          .catch(function(err){ alert('Gagal menghapus: ' + err.message); });
+      };
+    });
+  }
+
   function renderBiodataDetail(el){
     var e = state.employees.find(function(x){ return x.id===state.selectedEmployeeId; });
     if (!e){ state.selectedEmployeeId=null; renderBiodata(); return; }
@@ -1822,11 +2158,13 @@
     }
 
     if (edit){ html += '<div style="margin-top:16px;"><button class="btn btn-primary" id="save-btn">💾 Simpan Perubahan</button></div>'; }
+    html += renderChildModulesHTML(e);
     html += '</div>';
 
     el.innerHTML = html;
     wireCalendarButtons(el);
-    document.getElementById("back-link").onclick = function(){ state.selectedEmployeeId=null; state.editing=false; state.selfEditing=false; render(); };
+    wireChildModuleEvents(el, e);
+    document.getElementById("back-link").onclick = function(){ state.selectedEmployeeId=null; state.editing=false; state.selfEditing=false; state.childFormOpen=null; render(); };
     if (isOwnProfile){
       document.getElementById("self-edit-toggle").onclick = function(){ state.selfEditing = !state.selfEditing; render(); };
       if (selfEdit){
